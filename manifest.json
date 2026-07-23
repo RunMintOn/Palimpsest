@@ -1,0 +1,9 @@
+{
+  "id": "obsdn-side-grep",
+  "name": "Side Grep",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Live local semantic passage recall while writing.",
+  "author": "Prototype",
+  "isDesktopOnly": true
+}

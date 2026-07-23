@@ -1,0 +1,50 @@
+.obsdn-side-grep { padding: 8px; }
+.obsdn-side-grep-toolbar { display: flex; align-items: center; min-height: 32px; margin-bottom: 6px; }
+.obsdn-side-grep-title { margin: 0; }
+.obsdn-side-grep-toolbar-spacer { flex: 1; }
+.obsdn-side-grep-status-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; visibility: hidden; color: var(--text-muted); }
+.obsdn-side-grep-status-icon.is-visible { visibility: visible; }
+.obsdn-side-grep-status-icon.is-error { color: var(--text-error); }
+.obsdn-side-grep-status-icon.is-spinning svg { animation: obsdn-side-grep-spin 0.9s linear infinite; }
+@keyframes obsdn-side-grep-spin { to { transform: rotate(360deg); } }
+.obsdn-side-grep-toolbar-button { width: 28px; height: 28px; padding: 4px; }
+.obsdn-side-grep-index-panel { margin: 6px 0 10px; }
+.obsdn-side-grep-index-message { font-size: 0.9em; }
+.obsdn-side-grep-empty-state { color: var(--text-muted); font-size: 0.9em; margin: 8px 0; }
+.obsdn-side-grep-status-detail { color: var(--text-muted); font-size: 0.85em; margin: 4px 0 8px; }
+
+.obsdn-side-grep-result { margin: 3px 0; border: 0; border-radius: 6px; padding: 0 0 7px; }
+.obsdn-side-grep-result[open] { background: var(--background-secondary-alt); }
+.obsdn-side-grep-result summary { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 34px; padding: 4px 5px; border-radius: 5px; cursor: default; list-style: none; }
+.obsdn-side-grep-result summary:hover { background: var(--background-modifier-hover); }
+.obsdn-side-grep-result summary::-webkit-details-marker { display: none; }
+.obsdn-side-grep-result summary::before { content: "▶"; flex: none; color: var(--text-muted); font-size: 0.8em; cursor: pointer; }
+.obsdn-side-grep-result[open] > summary::before { content: "▼"; }
+.obsdn-side-grep-score { flex: none; min-width: 38px; padding: 2px 6px; border-radius: 5px; color: var(--text-muted); background: var(--background-modifier-hover); text-align: center; white-space: nowrap; font-size: 0.78em; font-variant-numeric: tabular-nums; cursor: pointer; }
+.obsdn-side-grep-file { flex: 1; min-width: 0; overflow: hidden; color: var(--link-color); text-overflow: ellipsis; white-space: nowrap; font-weight: 550; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--link-color) 50%, transparent); text-underline-offset: 2px; cursor: pointer; }
+.obsdn-side-grep-file:hover { color: var(--link-color-hover); text-decoration-color: currentColor; }
+.obsdn-side-grep-breadcrumb { overflow: hidden; margin: 1px 5px 7px; color: var(--text-muted); font-size: 0.78em; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+
+.obsdn-side-grep-excerpt-wrap { position: relative; margin: 0 5px; }
+.obsdn-side-grep-excerpt { min-width: 0; margin: 0; padding: 7px 31px 7px 10px; border-left: 2px solid var(--background-modifier-border-focus); color: var(--text-normal); background: var(--background-primary-alt); line-height: 1.55; overflow-wrap: anywhere; }
+.obsdn-side-grep-excerpt > :first-child { margin-top: 0; }
+.obsdn-side-grep-excerpt > :last-child { margin-bottom: 0; }
+.obsdn-side-grep-excerpt p { margin-block: 0.45em; }
+.obsdn-side-grep-excerpt h1,
+.obsdn-side-grep-excerpt h2,
+.obsdn-side-grep-excerpt h3,
+.obsdn-side-grep-excerpt h4,
+.obsdn-side-grep-excerpt h5,
+.obsdn-side-grep-excerpt h6 { margin: 0.55em 0 0.3em; font-size: 1em; line-height: 1.35; }
+.obsdn-side-grep-excerpt blockquote { margin: 7px 0 2px; padding: 5px 9px; border-left: 3px solid var(--text-faint); color: var(--text-muted); background: var(--background-secondary); }
+.obsdn-side-grep-excerpt pre { overflow-x: auto; }
+.obsdn-side-grep-excerpt img,
+.obsdn-side-grep-excerpt .internal-embed { max-width: 100%; max-height: 180px; }
+.obsdn-side-grep-card-action { width: 24px; height: 24px; padding: 3px; border: 0 !important; border-radius: 5px; color: var(--text-muted); background: var(--background-modifier-hover) !important; opacity: 0.75; box-shadow: none !important; cursor: grab; }
+.obsdn-side-grep-card-action:hover,
+.obsdn-side-grep-card-action:focus-visible { color: var(--text-normal); background: var(--background-modifier-active-hover) !important; opacity: 1; }
+.obsdn-side-grep-quote-action { position: absolute; top: 4px; right: 3px; }
+
+.obsdn-side-grep-progress { display: block; width: 100%; margin: 8px 0 3px; }
+.obsdn-side-grep-progress-detail { color: var(--text-muted); font-size: 0.85em; margin-bottom: 6px; }
+.obsdn-side-grep-index-action { margin: 4px 0 8px; }
