@@ -164,6 +164,7 @@ export class SideGrepView extends ItemView {
         this.indexPanel.createDiv({ cls: "obsdn-side-grep-progress-detail", text: detail });
       }
       const cancel = this.indexPanel.createEl("button", { text: "取消", cls: "obsdn-side-grep-index-action" });
+      cancel.disabled = progress?.phase === "saving";
       cancel.addEventListener("click", () => this.actions.cancelIndex());
       return;
     }

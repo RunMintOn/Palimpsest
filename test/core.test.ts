@@ -10,6 +10,7 @@ import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "../src/index-
 import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, executePreparedIndexBuild, prepareIndexBuild } from "../src/index-build-plan";
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
 import { PersistentIndex } from "../src/persistent-index";
+import { planIndexReconciliation } from "../src/index-reconciliation";
 import { buildQueryContext } from "../src/query-context";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
@@ -23,18 +24,35 @@ const options = { targetLength: 120, maxLength: 180, minLength: 30 };
 const identity = { model: "qwen3-embedding:0.6b", dimensions: 3, chunkerVersion: CHUNKER_VERSION, chunkTargetLength: 120, chunkMaxLength: 180, chunkMinLength: 30 };
 
 function indexed(id: string, filePath: string, text: string, vector: number[]): IndexedChunk {
-  return { id, contentHash: id, filePath, fileName: filePath.replace(/\.md$/, ""), breadcrumb: [], text, startLine: 1, endLine: 1, vector };
+  return { id, contentHash: id, filePath, fileName: filePath.split("/").at(-1)!.replace(/\.md$/, ""), breadcrumb: [], text, startLine: 1, endLine: 1, vector };
 }
 
 function chunk(id: string, filePath: string, text: string, contentHash = id): Chunk {
-  return { id, contentHash, filePath, fileName: filePath.replace(/\.md$/, ""), breadcrumb: [filePath], text, startLine: 1, endLine: 1 };
+  return { id, contentHash, filePath, fileName: filePath.split("/").at(-1)!.replace(/\.md$/, ""), breadcrumb: [], text, startLine: 1, endLine: 1 };
 }
 
 function buildPlan(chunks: Chunk[], reusable = new Map<string, IndexedChunk>(), overrides: Partial<{ totalMarkdownFiles: number; includedFiles: number; revision: number; scope: ReturnType<typeof indexScope>; identity: typeof identity }> = {}) {
+  const byPath = new Map<string, Chunk[]>();
+  for (const source of chunks) {
+    const documentChunks = byPath.get(source.filePath);
+    if (documentChunks) documentChunks.push(source);
+    else byPath.set(source.filePath, [source]);
+  }
+  const documents = [...byPath].map(([filePath, documentChunks]) => ({
+    filePath,
+    fileName: documentChunks[0].fileName,
+    sourceMtime: 1,
+    sourceSize: 1,
+    chunks: documentChunks
+  }));
+  const includedFiles = overrides.includedFiles ?? 2;
+  while (documents.length < includedFiles) {
+    const number = documents.length + 1;
+    documents.push({ filePath: `empty-${number}.md`, fileName: `empty-${number}`, sourceMtime: 1, sourceSize: 0, chunks: [] });
+  }
   return prepareIndexBuild({
     totalMarkdownFiles: overrides.totalMarkdownFiles ?? 3,
-    includedFiles: overrides.includedFiles ?? 2,
-    chunks,
+    documents,
     reusableById: reusable,
     vaultRevision: overrides.revision ?? 1,
     scope: overrides.scope ?? indexScope("Archive"),
@@ -132,6 +150,7 @@ test("query context uses current paragraph, heading, and prior paragraph with a 
 test("cosine, ordering, per-file cap, exclusion, and duplicate removal", () => {
   assert.equal(cosineSimilarity([1, 0], [1, 0]), 1);
   assert.equal(cosineSimilarity([1, 0], [0, 1]), 0);
+  assert.equal(cosineSimilarity(new Float32Array([1, 0]), new Float32Array([1, 0])), 1);
   const ranked = rankChunks([1, 0, 0], [
     indexed("self", "current.md", "self", [1, 0, 0]),
     indexed("a1", "a.md", "语义检索", [0.99, 0.01, 0]),
@@ -276,8 +295,8 @@ test("prepared build summarizes file counts and classifies only exact cached chu
   const first = chunk("first", "a.md", "first", "hash-a");
   const changed = chunk("changed", "b.md", "changed", "hash-new");
   const plan = buildPlan([first, changed], new Map([
-    ["first", { ...indexed("first", "old.md", "old metadata", [1, 0, 0]), contentHash: "hash-a" }],
-    ["changed", indexed("changed", "b.md", "changed", [0, 1, 0])]
+    ["first", { ...indexed("first", "old-folder/a.md", "first", [1, 0, 0]), contentHash: "hash-a", fileName: "a" }],
+    ["changed", indexed("changed", "b.md", "old changed", [0, 1, 0])]
   ]));
   assert.deepEqual(plan.summary, {
     totalMarkdownFiles: 3,
@@ -291,6 +310,16 @@ test("prepared build summarizes file counts and classifies only exact cached chu
     dimensions: identity.dimensions
   });
   assert.equal(plan.summary.totalChunks, plan.summary.reusableChunks + plan.summary.pendingChunks);
+});
+
+test("full-build plans derive included files from document snapshots and reject impossible totals", () => {
+  const documents = [
+    { filePath: "a.md", fileName: "a", sourceMtime: 1, sourceSize: 1, chunks: [chunk("a", "a.md", "a")] },
+    { filePath: "empty.md", fileName: "empty", sourceMtime: 1, sourceSize: 0, chunks: [] }
+  ];
+  const input = { totalMarkdownFiles: 2, documents, reusableById: new Map<string, IndexedChunk>(), vaultRevision: 1, scope: indexScope([]), identity };
+  assert.equal(prepareIndexBuild(input).summary.includedFiles, 2);
+  assert.throws(() => prepareIndexBuild({ ...input, totalMarkdownFiles: 1 }), /must include every scanned document/);
 });
 
 test("index-build confirmation uses distinct initial/rebuild copy and shows every prepared summary field", () => {
@@ -315,7 +344,7 @@ test("index-build confirmation uses distinct initial/rebuild copy and shows ever
 });
 
 test("index-build confirmation names an empty exclusion scope and fully reusable vectors", () => {
-  const reusable = indexed("a", "a.md", "old", [1, 0, 0]);
+  const reusable = indexed("a", "a.md", "fresh", [1, 0, 0]);
   const plan = buildPlan([chunk("a", "a.md", "fresh")], new Map([["a", reusable]]), {
     totalMarkdownFiles: 1,
     includedFiles: 1,
@@ -382,9 +411,9 @@ test("full-build request gate merges overlapping requests, including confirmatio
 });
 
 test("prepared build executes pending chunks only, keeps scan order, and retains fresh chunk metadata", async () => {
-  const first = chunk("first", "new-a.md", "fresh text", "hash-a");
+  const first = chunk("first", "new-folder/a.md", "fresh text", "hash-a");
   const pending = chunk("pending", "b.md", "embed me", "hash-b");
-  const cached = { ...indexed("first", "old-a.md", "stale text", [1, 0, 0]), contentHash: "hash-a" };
+  const cached = { ...indexed("first", "old-folder/a.md", "fresh text", [1, 0, 0]), contentHash: "hash-a", fileName: "a" };
   const plan = buildPlan([first, pending], new Map([["first", cached]]));
   const requested: string[][] = [];
   const pendingVector = [0, 1, 0];
@@ -399,15 +428,53 @@ test("prepared build executes pending chunks only, keeps scan order, and retains
     yieldToUi: async () => undefined
   });
   assert.deepEqual(requested, [["pending"]]);
-  assert.deepEqual(executed.chunks.map((item) => item.id), ["first", "pending"]);
-  assert.equal(executed.chunks[0].filePath, "new-a.md");
-  assert.equal(executed.chunks[0].text, "fresh text");
-  assert.deepEqual(executed.chunks.map((item) => item.vector), [[1, 0, 0], [0, 1, 0]]);
-  assert.strictEqual(executed.chunks[0].vector, cached.vector, "reusable vectors share the formal-index reference");
+  const executedChunks = executed.documents.flatMap((document) => document.chunks);
+  assert.deepEqual(executedChunks.map((item) => item.id), ["first", "pending"]);
+  assert.equal(executedChunks[0].filePath, "new-folder/a.md");
+  assert.equal(executedChunks[0].text, "fresh text");
+  assert.deepEqual(executedChunks.map((item) => item.vector), [[1, 0, 0], [0, 1, 0]]);
+  assert.strictEqual(executedChunks[0].vector, cached.vector, "reusable vectors share the formal-index reference");
   assert.equal(Object.isFrozen(cached.vector), false, "planning does not freeze or otherwise mutate the formal-index vector");
-  assert.notStrictEqual(executed.chunks[0], cached, "new scan metadata never reuses the old IndexedChunk object");
-  assert.strictEqual(executed.chunks[1].vector, pendingVector, "new embedding vectors are not copied again before the candidate");
+  assert.notStrictEqual(executedChunks[0], cached, "new scan metadata never reuses the old IndexedChunk object");
+  assert.strictEqual(executedChunks[1].vector, pendingVector, "new embedding vectors are not copied again before the candidate");
   assert.deepEqual(executed.scope, indexScope("Archive"));
+});
+
+test("full-build execution returns only its document scan snapshot, including empty documents", async () => {
+  const scanned = [
+    { filePath: "scanned.md", fileName: "scanned", sourceMtime: 10, sourceSize: 20, chunks: [chunk("scanned", "scanned.md", "body")] },
+    { filePath: "empty.md", fileName: "empty", sourceMtime: 11, sourceSize: 0, chunks: [] }
+  ];
+  const plan = prepareIndexBuild({
+    totalMarkdownFiles: 2,
+    documents: scanned,
+    reusableById: new Map(),
+    vaultRevision: 7,
+    scope: indexScope([]),
+    identity
+  });
+  const executed = await executePreparedIndexBuild(plan, {
+    current: { vaultRevision: 7, identity, scope: indexScope([]) },
+    batchSize: 1,
+    embedDocuments: async () => [[1, 0, 0]],
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.deepEqual(executed.documents.map(({ filePath, sourceMtime, sourceSize, chunks }) => ({ filePath, sourceMtime, sourceSize, chunks: chunks.length })), [
+    { filePath: "scanned.md", sourceMtime: 10, sourceSize: 20, chunks: 1 },
+    { filePath: "empty.md", sourceMtime: 11, sourceSize: 0, chunks: 0 }
+  ]);
+  const reconciliation = planIndexReconciliation(
+    executed.documents.map(({ filePath, fileName, sourceMtime, sourceSize }) => ({ filePath, fileName, sourceMtime, sourceSize })),
+    [
+      { path: "scanned.md", mtime: 12, size: 20 },
+      { path: "empty.md", mtime: 11, size: 0 },
+      { path: "added-after-scan.md", mtime: 13, size: 1 }
+    ]
+  );
+  assert.deepEqual(reconciliation.added, ["added-after-scan.md"]);
+  assert.deepEqual(reconciliation.statChanged, ["scanned.md"]);
+  assert.equal(executed.documents.some((document) => document.filePath === "added-after-scan.md"), false);
 });
 
 test("empty vault and fully reusable plans do not request document embeddings", async () => {
@@ -418,13 +485,13 @@ test("empty vault and fully reusable plans do not request document embeddings", 
     scope: indexScope("Archive"), model: identity.model, dimensions: identity.dimensions
   });
   let calls = 0;
-  const reusable = buildPlan([chunk("a", "a.md", "a")], new Map([["a", indexed("a", "a.md", "old", [1, 0, 0])]]));
+  const reusable = buildPlan([chunk("a", "a.md", "a")], new Map([["a", indexed("a", "a.md", "a", [1, 0, 0])]]));
   const executed = await executePreparedIndexBuild(reusable, {
     current: { vaultRevision: 1, identity, scope: indexScope("Archive") }, batchSize: 2,
     embedDocuments: async () => { calls++; return []; }, assertCanContinue: () => undefined, yieldToUi: async () => undefined
   });
   assert.equal(calls, 0);
-  assert.equal(executed.chunks.length, 1);
+  assert.equal(executed.documents.flatMap((document) => document.chunks).length, 1);
 });
 
 test("duplicate chunk IDs fail during prepare with both contexts before embedding", () => {
@@ -464,8 +531,7 @@ test("vault revision, identity, and desired scope changes stale a plan before em
 test("prepare rejects changes discovered at scan completion instead of returning a stale plan", () => {
   const base = {
     totalMarkdownFiles: 1,
-    includedFiles: 1,
-    chunks: [chunk("a", "a.md", "a")],
+    documents: [{ filePath: "a.md", fileName: "a", sourceMtime: 1, sourceSize: 1, chunks: [chunk("a", "a.md", "a")] }],
     reusableById: new Map<string, IndexedChunk>(),
     vaultRevision: 4,
     scope: indexScope("Archive"),
@@ -486,6 +552,17 @@ test("a cancelled preparation token is finished before the next independent exec
   const execution = cancellation.startBuild();
   assert.doesNotThrow(() => cancellation.assertBuildCanContinue(execution));
   cancellation.finishBuild(execution);
+});
+
+test("ordinary cancellation stops at the durable full-commit boundary while unload remains active", () => {
+  const cancellation = new BuildCancellationController();
+  const build = cancellation.startBuild();
+  cancellation.beginDurableCommit(build);
+  cancellation.cancelCurrentBuild();
+  assert.doesNotThrow(() => cancellation.assertBuildCanContinue(build));
+  cancellation.unload();
+  assert.throws(() => cancellation.assertPluginActive(), IndexBuildCancelled);
+  assert.throws(() => cancellation.assertBuildCanContinue(build), IndexBuildCancelled);
 });
 
 test("cancelled or failed plan execution produces no candidate to replace the existing index", async () => {
@@ -676,4 +753,11 @@ test("auto expansion combines rank count, all mode, and an optional similarity t
 test("Ollama HTTP 200 with empty embeddings is rejected", async () => {
   const provider = new OllamaEmbeddingProvider({ endpoint: "http://test/api/embed", model: "model", dimensions: 3, keepAlive: "5m", queryInstruction: "instruction" }, async () => ({ status: 200, text: '{"embeddings":[]}' }));
   await assert.rejects(provider.embedDocuments(["文档"]), (error: unknown) => error instanceof EmbeddingError && error.kind === "validation");
+});
+
+test("Ollama embedding vectors are normalized to Float32Array at the provider edge", async () => {
+  const provider = new OllamaEmbeddingProvider({ endpoint: "http://test/api/embed", model: "model", dimensions: 3, keepAlive: "5m", queryInstruction: "instruction" }, async () => ({ status: 200, text: '{"embeddings":[[0.25,0.5,0.75]]}' }));
+  const response = await provider.embedDocuments(["文档"]);
+  assert.ok(response.vectors[0] instanceof Float32Array);
+  assert.deepEqual([...response.vectors[0]], [0.25, 0.5, 0.75]);
 });

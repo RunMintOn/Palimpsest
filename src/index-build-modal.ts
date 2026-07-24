@@ -1,6 +1,7 @@
 import { App, ButtonComponent, Modal, Setting } from "obsidian";
 import type { IndexBuildSummary } from "./index-build-plan";
-import { indexBuildConfirmationModel } from "./index-build-confirmation";
+import type { IncrementalIndexSummary } from "./incremental-index-plan";
+import { incrementalIndexConfirmationModel, IndexBuildConfirmationModel, indexBuildConfirmationModel } from "./index-build-confirmation";
 
 class IndexBuildModal extends Modal {
   private confirmed = false;
@@ -8,15 +9,14 @@ class IndexBuildModal extends Modal {
 
   constructor(
     app: App,
-    private readonly summary: IndexBuildSummary,
-    private readonly hasUsableIndex: boolean,
+    private readonly model: IndexBuildConfirmationModel,
     private readonly resolveConfirmation: (confirmed: boolean) => void
   ) {
     super(app);
   }
 
   onOpen(): void {
-    const model = indexBuildConfirmationModel(this.summary, this.hasUsableIndex);
+    const model = this.model;
     this.setTitle(model.title);
     this.contentEl.createEl("p", { text: model.prompt });
 
@@ -62,6 +62,13 @@ export function confirmIndexBuild(
   hasUsableIndex: boolean
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    new IndexBuildModal(app, summary, hasUsableIndex, resolve).open();
+    new IndexBuildModal(app, indexBuildConfirmationModel(summary, hasUsableIndex), resolve).open();
+  });
+}
+
+/** Uses the full-build Modal state machine rather than a second confirmation implementation. */
+export function confirmLargeIncrementalIndexUpdate(app: App, summary: IncrementalIndexSummary): Promise<boolean> {
+  return new Promise((resolve) => {
+    new IndexBuildModal(app, incrementalIndexConfirmationModel(summary), resolve).open();
   });
 }

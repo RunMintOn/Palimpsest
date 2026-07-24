@@ -132,6 +132,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
 
   private indexPage(): void {
     this.indexScopeSettings();
+    this.localIndexStorageSettings();
     this.heading("索引构建", "indexBuild");
     this.fullIndexBuildSetting();
     this.number("建库批量大小", "每次 Ollama 文档 embedding 数", "embeddingBatchSize", 1);
@@ -139,6 +140,36 @@ export class SideGrepSettingTab extends PluginSettingTab {
     this.number("片段目标长度", "推荐 500–700 字符", "chunkTargetLength", 1);
     this.number("片段最大长度", "推荐 1000–1200 字符", "chunkMaxLength", 1);
     this.number("片段最小有效长度", "短而有意义的笔记仍可索引", "chunkMinLength", 1);
+  }
+
+  private localIndexStorageSettings(): void {
+    this.heading("本地索引");
+    const status = this.plugin.getLocalIndexStatus();
+    const description = status.status === "uninitialized"
+      ? "尚未建立本地索引。"
+      : status.status === "ready"
+        ? `当前本地索引包含 ${status.documents ?? 0} 篇文档、${status.chunks ?? 0} 个片段。`
+        : `本地索引包含 ${status.documents ?? 0} 篇文档、${status.chunks ?? 0} 个片段，但当前设置需要重新建立。`;
+    new Setting(this.containerEl)
+      .setName("清除本地索引")
+      .setDesc(`${description} 这不会删除 Markdown 笔记、插件设置或 vault 身份。`)
+      .addButton((button) => button
+        .setButtonText("清除本地索引")
+        .setWarning()
+        .onClick(async () => {
+          // Clicking the destructive setting is the first action; this is the
+          // explicit second confirmation before the vault-scoped IDB clear.
+          if (!window.confirm("确定清除本 vault 的本地索引吗？Markdown 笔记和插件设置不会删除。")) return;
+          button.setDisabled(true);
+          try {
+            await this.plugin.clearLocalIndex();
+            new Notice("本地索引已清除，请重新建立索引。");
+          } catch (error) {
+            new Notice(`清除本地索引失败：${error instanceof Error ? error.message : String(error)}`);
+          } finally {
+            this.display();
+          }
+        }));
   }
 
   private embeddingPage(): void {

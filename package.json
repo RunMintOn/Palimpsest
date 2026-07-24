@@ -11,6 +11,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
+    "fake-indexeddb": "^6.2.5",
     "obsidian": "~1.12.3",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0"

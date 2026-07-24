@@ -1,5 +1,5 @@
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus } from "./index-scope";
-import { IndexIdentity, IndexedChunk, IndexLifecycle, PersistentIndexData } from "./types";
+import { IndexIdentity, IndexedChunk, IndexedDocumentMetadata, IndexLifecycle, PersistentIndexData } from "./types";
 
 const CURRENT_SCHEMA_VERSION = 3;
 
@@ -14,6 +14,10 @@ export function sameIdentity(left: IndexIdentity, right: IndexIdentity): boolean
 
 function copyScope(scope: IndexScope): IndexScope {
   return { excludedDirectories: [...scope.excludedDirectories] };
+}
+
+function copyDocuments(documents: readonly IndexedDocumentMetadata[] | undefined): IndexedDocumentMetadata[] | undefined {
+  return documents?.map((document) => ({ ...document }));
 }
 
 export class PersistentIndex {
@@ -32,7 +36,7 @@ export class PersistentIndex {
       const scope = initialized
         ? indexScope(saved.scope?.excludedDirectories ?? legacySettingsScope.excludedDirectories)
         : undefined;
-      this.data = { ...saved, schemaVersion: CURRENT_SCHEMA_VERSION, initialized, scope };
+      this.data = { ...saved, documents: copyDocuments(saved.documents), schemaVersion: CURRENT_SCHEMA_VERSION, initialized, scope };
     } else {
       this.data = { schemaVersion: CURRENT_SCHEMA_VERSION, identity, chunks: [], updatedAt: 0, initialized: false };
     }
@@ -45,6 +49,9 @@ export class PersistentIndex {
   get identity(): IndexIdentity { return this.data.identity; }
   get chunks(): readonly IndexedChunk[] { return this.data.chunks; }
   get size(): number { return this.data.chunks.length; }
+
+  /** Includes indexed Markdown files that produced zero chunks. */
+  get documents(): readonly IndexedDocumentMetadata[] { return copyDocuments(this.data.documents) ?? []; }
 
   /** A copy prevents callers from changing the persisted effective scope. */
   get scope(): IndexScope | undefined {
@@ -103,6 +110,7 @@ export class PersistentIndex {
     const initialized = data.initialized ?? data.updatedAt > 0;
     this.data = {
       ...data,
+      documents: copyDocuments(data.documents),
       schemaVersion: CURRENT_SCHEMA_VERSION,
       initialized,
       scope: initialized
@@ -112,6 +120,6 @@ export class PersistentIndex {
   }
 
   serialize(): PersistentIndexData {
-    return { ...this.data, scope: this.scope };
+    return { ...this.data, scope: this.scope, documents: copyDocuments(this.data.documents) };
   }
 }

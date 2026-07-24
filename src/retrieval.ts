@@ -1,6 +1,6 @@
-import { IndexedChunk, SearchResult } from "./types";
+import { IndexedChunk, NumericVector, SearchResult } from "./types";
 
-export function cosineSimilarity(left: number[], right: number[]): number {
+export function cosineSimilarity(left: NumericVector, right: NumericVector): number {
   if (!left.length || left.length !== right.length) throw new Error("Cosine vectors must be non-empty and have equal dimensions");
   let dot = 0;
   let leftNorm = 0;
@@ -24,7 +24,7 @@ export interface RankOptions {
   duplicateSimilarity?: number;
 }
 
-export function rankChunks(query: number[], candidates: readonly IndexedChunk[], options: RankOptions): SearchResult[] {
+export function rankChunks(query: NumericVector, candidates: readonly IndexedChunk[], options: RankOptions): SearchResult[] {
   const scored = candidates
     .filter((chunk) => chunk.filePath !== options.excludePath)
     .map((chunk) => ({ ...chunk, similarity: cosineSimilarity(query, chunk.vector) }))

@@ -6,3 +6,5 @@ test-vault/
 prototypes/
 开发笔记.md
 docs/
+data.json
+data.*.backup.json

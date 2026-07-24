@@ -1,6 +1,10 @@
 import { IndexScope, indexScope, sameIndexScope } from "./index-scope";
+import { ScannedIndexDocument } from "./index-document-scan";
+import { EmbeddingReuseLookup, groupChunksByEmbeddingInput } from "./embedding-reuse";
 import { sameIdentity } from "./persistent-index";
-import { Chunk, IndexIdentity, IndexedChunk } from "./types";
+import { Chunk, IndexIdentity, IndexedChunk, NumericVector } from "./types";
+
+export type { ScannedIndexDocument } from "./index-document-scan";
 
 export interface IndexBuildSummary {
   totalMarkdownFiles: number;
@@ -16,9 +20,11 @@ export interface IndexBuildSummary {
 
 export interface IndexBuildPlanInput {
   totalMarkdownFiles: number;
-  includedFiles: number;
-  chunks: readonly Chunk[];
+  /** The sole full-build scan source, including documents with zero chunks. */
+  documents: readonly ScannedIndexDocument[];
   reusableById: ReadonlyMap<string, IndexedChunk>;
+  /** Complete current index enables path-independent semantic vector reuse. */
+  reusableChunks?: readonly IndexedChunk[];
   vaultRevision: number;
   scope: IndexScope;
   identity: IndexIdentity;
@@ -43,11 +49,11 @@ export class VaultRevision {
 
 interface PlannedChunk {
   chunk: Chunk;
-  reusableVector?: number[];
+  reusableVector?: NumericVector;
 }
 
 interface PreparedIndexBuildData {
-  chunks: readonly PlannedChunk[];
+  documents: readonly { document: ScannedIndexDocument; chunks: readonly PlannedChunk[] }[];
   vaultRevision: number;
   identity: IndexIdentity;
   scope: IndexScope;
@@ -71,6 +77,16 @@ function copyIdentity(identity: IndexIdentity): IndexIdentity {
 
 function copyChunk(chunk: Chunk): Chunk {
   return { ...chunk, breadcrumb: [...chunk.breadcrumb] };
+}
+
+function copyDocument(document: ScannedIndexDocument): ScannedIndexDocument {
+  return {
+    filePath: document.filePath,
+    fileName: document.fileName,
+    sourceMtime: document.sourceMtime,
+    sourceSize: document.sourceSize,
+    chunks: document.chunks.map(copyChunk)
+  };
 }
 
 function chunkContext(chunk: Chunk): string {
@@ -103,23 +119,26 @@ export class IndexBuildPlanStale extends Error {
 export class PreparedIndexBuild {
   readonly summary: Readonly<IndexBuildSummary>;
 
-  constructor(input: IndexBuildPlanInput, chunks: readonly PlannedChunk[], reusableChunks: number) {
+  constructor(input: IndexBuildPlanInput, documents: PreparedIndexBuildData["documents"], reusableChunks: number) {
     const scope = copyScope(input.scope);
     this.summary = Object.freeze({
       totalMarkdownFiles: input.totalMarkdownFiles,
-      excludedFiles: input.totalMarkdownFiles - input.includedFiles,
-      includedFiles: input.includedFiles,
-      totalChunks: chunks.length,
+      excludedFiles: input.totalMarkdownFiles - documents.length,
+      includedFiles: documents.length,
+      totalChunks: documents.reduce((total, document) => total + document.chunks.length, 0),
       reusableChunks,
-      pendingChunks: chunks.length - reusableChunks,
+      pendingChunks: documents.reduce((total, document) => total + document.chunks.length, 0) - reusableChunks,
       scope: Object.freeze({ excludedDirectories: Object.freeze([...scope.excludedDirectories]) as unknown as string[] }),
       model: input.identity.model,
       dimensions: input.identity.dimensions
     });
     preparedBuildData.set(this, {
-      chunks: Object.freeze(chunks.map((item) => Object.freeze({
-        chunk: copyChunk(item.chunk),
-        reusableVector: item.reusableVector
+      documents: Object.freeze(documents.map(({ document, chunks }) => Object.freeze({
+        document: copyDocument(document),
+        chunks: Object.freeze(chunks.map((item) => Object.freeze({
+          chunk: copyChunk(item.chunk),
+          reusableVector: item.reusableVector
+        })))
       }))),
       vaultRevision: input.vaultRevision,
       identity: copyIdentity(input.identity),
@@ -130,21 +149,29 @@ export class PreparedIndexBuild {
 
 /** Creates a plan after scanning, before any document embedding is requested. */
 export function prepareIndexBuild(input: IndexBuildPlanInput): PreparedIndexBuild {
+  if (!Number.isInteger(input.totalMarkdownFiles) || input.totalMarkdownFiles < input.documents.length) {
+    throw new Error("Full-build totalMarkdownFiles must include every scanned document");
+  }
+  const scannedDocuments = input.documents;
+  const scannedChunks = scannedDocuments.flatMap((document) => document.chunks);
   const seen = new Map<string, Chunk>();
-  for (const chunk of input.chunks) {
+  for (const chunk of scannedChunks) {
     const first = seen.get(chunk.id);
     if (first) throw new DuplicateIndexChunkIdError(chunk.id, first, chunk);
     seen.set(chunk.id, chunk);
   }
 
+  const lookup = new EmbeddingReuseLookup(input.reusableChunks ?? [...input.reusableById.values()]);
   let reusableChunks = 0;
-  const chunks = input.chunks.map((chunk) => {
-    const cached = input.reusableById.get(chunk.id);
-    const reusableVector = cached?.contentHash === chunk.contentHash ? cached.vector : undefined;
-    if (reusableVector) reusableChunks++;
-    return { chunk: copyChunk(chunk), reusableVector };
+  const documents = scannedDocuments.map((document) => {
+    const chunks = document.chunks.map((chunk) => {
+      const reusableVector = lookup.find(chunk);
+      if (reusableVector) reusableChunks++;
+      return { chunk: copyChunk(chunk), reusableVector };
+    });
+    return { document: copyDocument(document), chunks };
   });
-  const plan = new PreparedIndexBuild(input, chunks, reusableChunks);
+  const plan = new PreparedIndexBuild(input, documents, reusableChunks);
   if (input.currentState) assertIndexBuildPlanCurrent(plan, input.currentState());
   return plan;
 }
@@ -159,7 +186,7 @@ export function assertIndexBuildPlanCurrent(plan: PreparedIndexBuild, current: I
 export interface ExecutePreparedIndexBuildOptions {
   current: IndexBuildPlanState;
   batchSize: number;
-  embedDocuments(chunks: readonly Chunk[]): Promise<readonly number[][]>;
+  embedDocuments(chunks: readonly Chunk[]): Promise<readonly NumericVector[]>;
   assertCanContinue(): void;
   yieldToUi(): Promise<void>;
   onEmbeddingProgress?(current: number, total: number): void;
@@ -168,7 +195,8 @@ export interface ExecutePreparedIndexBuildOptions {
 export interface ExecutedIndexBuild {
   identity: IndexIdentity;
   scope: IndexScope;
-  chunks: IndexedChunk[];
+  vaultRevision: number;
+  documents: Array<Omit<ScannedIndexDocument, "chunks"> & { chunks: IndexedChunk[] }>;
 }
 
 /** Validates freshness, embeds only pending chunks, and restores scan order. */
@@ -178,16 +206,19 @@ export async function executePreparedIndexBuild(plan: PreparedIndexBuild, option
   if (!Number.isInteger(options.batchSize) || options.batchSize < 1) throw new Error("Embedding batch size must be a positive integer");
 
   const data = dataFor(plan);
-  const pending = data.chunks.filter((item) => !item.reusableVector);
-  const embeddedVectors = new Map<string, number[]>();
-  for (let start = 0; start < pending.length; start += options.batchSize) {
+  const pending = data.documents.flatMap((document) => document.chunks.filter((item) => !item.reusableVector));
+  const groups = groupChunksByEmbeddingInput(pending.map((item) => item.chunk));
+  const embeddedVectors = new Map<string, NumericVector>();
+  for (let start = 0; start < groups.length; start += options.batchSize) {
     options.assertCanContinue();
-    const batch = pending.slice(start, start + options.batchSize);
-    const vectors = await options.embedDocuments(batch.map((item) => item.chunk));
+    const batch = groups.slice(start, start + options.batchSize);
+    const vectors = await options.embedDocuments(batch.map((group) => group.representative));
     options.assertCanContinue();
-    if (vectors.length !== batch.length) throw new Error(`Embedding response count ${vectors.length} does not match requested chunk count ${batch.length}`);
-    for (let index = 0; index < batch.length; index++) embeddedVectors.set(batch[index].chunk.id, vectors[index]);
-    options.onEmbeddingProgress?.(Math.min(start + batch.length, pending.length), pending.length);
+    if (vectors.length !== batch.length) throw new Error(`Embedding response count ${vectors.length} does not match requested input groups ${batch.length}`);
+    for (let index = 0; index < batch.length; index++) {
+      for (const chunk of batch[index].chunks) embeddedVectors.set(chunk.id, vectors[index]);
+    }
+    options.onEmbeddingProgress?.(Math.min(start + batch.length, groups.length), groups.length);
     await options.yieldToUi();
   }
   options.assertCanContinue();
@@ -195,9 +226,13 @@ export async function executePreparedIndexBuild(plan: PreparedIndexBuild, option
   return {
     identity: copyIdentity(data.identity),
     scope: copyScope(data.scope),
-    chunks: data.chunks.map(({ chunk, reusableVector }) => ({
-      ...chunk,
-      vector: reusableVector ?? embeddedVectors.get(chunk.id)!
+    vaultRevision: data.vaultRevision,
+    documents: data.documents.map(({ document, chunks }) => ({
+      ...copyDocument(document),
+      chunks: chunks.map(({ chunk, reusableVector }) => ({
+        ...chunk,
+        vector: reusableVector ?? embeddedVectors.get(chunk.id)!
+      }))
     }))
   };
 }

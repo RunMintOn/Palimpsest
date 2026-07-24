@@ -1,11 +1,20 @@
-import { Editor, MarkdownView, Plugin, TAbstractFile, TFile, WorkspaceLeaf, requestUrl } from "obsidian";
-import { chunkMarkdown, embeddingText } from "./chunker";
+import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf, requestUrl } from "obsidian";
+import { embeddingText } from "./chunker";
+import { embeddingInputHash } from "./embedding-reuse";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
+import { BulkIndexUpdateDeferral } from "./bulk-index-update-deferral";
 import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
 import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build-flow";
-import { confirmIndexBuild } from "./index-build-modal";
+import { confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
+import { IndexDocumentScanStale, ScannedIndexDocument, scanIndexDocument } from "./index-document-scan";
 import { PersistentIndex } from "./persistent-index";
+import { createIndexStore, IndexStore } from "./index-store";
+import { indexLoadRecoveryMessage } from "./index-load-feedback";
+import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
+import { executeIncrementalIndexPlan, IncrementalChangeSummary, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "./incremental-index-plan";
+import { runIndexReconciliation } from "./index-reconciliation";
+import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded } from "./index-scope";
 import { buildQueryContext } from "./query-context";
 import { QueryGate } from "./query-gate";
@@ -14,12 +23,9 @@ import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
-import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
-
-interface PluginData {
-  settings?: StoredSideGrepSettings;
-  index?: PersistentIndexData;
-}
+import { CHUNKER_VERSION, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
+import { ensureVaultIdentity } from "./vault-identity";
+import { planVaultChanges, VaultChange, VaultChangeQueue } from "./vault-change-plan";
 
 /** Read-only index-scope state intended for settings and other UI consumers. */
 export interface IndexScopeView {
@@ -31,10 +37,12 @@ export interface IndexScopeView {
 export default class SideGrepPlugin extends Plugin implements SidebarActions {
   settings: SideGrepSettings = migrateSettings();
   private index!: PersistentIndex;
+  private indexStore: IndexStore | undefined;
   private queryTimer: number | undefined;
   private modelTimer: number | undefined;
   private updateTimer: number | undefined;
-  private readonly pendingChangedPaths = new Set<string>();
+  private readonly pendingVaultChanges = new VaultChangeQueue();
+  private flushingFileUpdates = false;
   private readonly queryGate = new QueryGate();
   private lifecycle = new QueryLifecycleCoordinator("uninitialized");
   private latestMarkdownView: MarkdownView | undefined;
@@ -43,21 +51,45 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private results: SearchResult[] = [];
   private preparingIndex = false;
   private indexing = false;
+  /** Once durable publication starts, ordinary cancellation cannot change its result. */
+  private committingIndex = false;
   private readonly fullIndexBuildRequests = new FullIndexBuildRequestGate();
   private readonly vaultRevision = new VaultRevision();
   private readonly buildCancellation = new BuildCancellationController();
+  /** A cancelled bulk patch remains intentionally deferred until a full rebuild. */
+  private readonly deferredLargeIndexUpdate = new BulkIndexUpdateDeferral();
+  /** A fallback generation is queryable but deliberately not patchable in place. */
+  private fallbackGenerationInUse = false;
 
   async onload(): Promise<void> {
-    const saved = (await this.loadData() ?? {}) as PluginData;
-    this.settings = migrateSettings(saved.settings);
-    this.index = new PersistentIndex(this.indexIdentity(), saved.index, this.desiredIndexScope());
-    const legacyIndexWasCompleted = saved.index && (saved.index.initialized ?? saved.index.updatedAt > 0);
-    const savedExcludedDirectories = saved.settings?.excludedDirectories;
-    const settingsScopeWasMigrated = savedExcludedDirectories !== undefined &&
-      JSON.stringify(savedExcludedDirectories) !== JSON.stringify(this.settings.excludedDirectories);
-    if (settingsScopeWasMigrated || (legacyIndexWasCompleted && !saved.index?.scope) || saved.index?.schemaVersion === 1 || saved.index?.schemaVersion === 2) {
-      await this.saveData({ settings: this.settings, index: this.index.serialize() });
+    let saved: unknown;
+    try {
+      saved = await this.loadData() ?? {};
+    } catch (error) {
+      console.error("[Palimpsest] Could not read plugin settings; using defaults without touching the existing data file", error);
     }
+    this.settings = migrateSettings(settingsFromPluginData<StoredSideGrepSettings>(saved));
+    let persistedIndex: PersistentIndexData | undefined;
+    try {
+      const identity = await ensureVaultIdentity({ configDir: this.app.vault.configDir, adapter: this.app.vault.adapter });
+      this.indexStore = createIndexStore(identity.vaultId);
+      const loaded = await this.indexStore.load();
+      if (loaded.status === "ready") {
+        persistedIndex = loaded.data;
+        if (loaded.recovery) {
+          this.fallbackGenerationInUse = true;
+          console.warn("[Palimpsest] IndexedDB loaded the previous valid index generation after recovery");
+        }
+        const recoveryMessage = indexLoadRecoveryMessage(loaded);
+        if (recoveryMessage) new Notice(recoveryMessage);
+      }
+    } catch (error) {
+      console.error("[Palimpsest] Could not initialize the local IndexedDB index; the index remains uninitialized", error);
+      this.indexStore?.close();
+      this.indexStore = undefined;
+    }
+    // Intentionally ignore legacy saved.index even when an old data.json happens to parse.
+    this.index = new PersistentIndex(this.indexIdentity(), persistedIndex, this.desiredIndexScope());
     this.syncQueryAvailability();
     this.registerView(PALIMPSEST_VIEW_TYPE, (leaf) => new SideGrepView(leaf, this));
     this.addSettingTab(new SideGrepSettingTab(this.app, this));
@@ -69,6 +101,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.registerEvent(this.app.vault.on("create", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("modify", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.scheduleFileUpdate(file)));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.scheduleRename(file, oldPath)));
     this.showIndexRequirement();
     this.app.workspace.onLayoutReady(() => {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -78,18 +111,22 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       }
       const schedule = this.lifecycle.layoutReady();
       if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
+      void this.reconcileIndexAfterLayout();
     });
   }
 
   onunload(): void {
     this.buildCancellation.unload();
+    this.indexStore?.close();
     this.clearQueryTimers();
+    if (this.updateTimer !== undefined) window.clearTimeout(this.updateTimer);
+    this.updateTimer = undefined;
     this.queryGate.invalidate();
   }
 
   async saveSettings(): Promise<void> {
     this.settings = migrateSettings(this.settings);
-    await this.saveData({ settings: this.settings, index: this.index.serialize() });
+    await this.saveData(pluginSettingsData(this.settings));
   }
 
   onSettingsChanged(): void {
@@ -140,13 +177,40 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     return { description: "重新扫描全部范围，现有向量会尽量复用。", buttonLabel: "准备全量重建" };
   }
 
+  /** Small, user-facing status only; IndexedDB cannot reliably report this vault's disk bytes. */
+  getLocalIndexStatus(): { status: "uninitialized" | "ready" | "incompatible"; documents?: number; chunks?: number } {
+    const lifecycle = this.index.lifecycle(this.indexIdentity());
+    if (lifecycle === "uninitialized") return { status: "uninitialized" };
+    return { status: lifecycle === "ready" ? "ready" : "incompatible", documents: this.index.documents.length, chunks: this.index.size };
+  }
+
+  /** Removes only the durable data for this vault, then makes queries visibly uninitialized. */
+  async clearLocalIndex(): Promise<void> {
+    if (this.isBuildActive()) throw new Error("索引正在更新，完成或取消后再清除本地索引");
+    await this.requireIndexStore().clear();
+    this.buildCancellation.assertPluginActive();
+    this.index = new PersistentIndex(this.indexIdentity(), undefined, this.desiredIndexScope());
+    this.pendingVaultChanges.clear();
+    this.deferredLargeIndexUpdate.clear();
+    this.fallbackGenerationInUse = false;
+    this.queryGate.invalidate();
+    this.results = [];
+    this.syncQueryAvailability();
+    this.present({
+      kind: "index-needed",
+      message: "本地索引已清除",
+      detail: "重新建立索引后即可继续检索。",
+      indexAction: "build"
+    }, []);
+  }
+
   private syncQueryAvailability(): void {
     const lifecycle = this.index.lifecycle(this.indexIdentity());
     this.lifecycle.setIndexAvailability(lifecycle === "ready" ? "ready" : lifecycle === "incompatible" ? "incompatible" : "uninitialized");
   }
 
   private isBuildActive(): boolean {
-    return this.preparingIndex || this.indexing;
+    return this.preparingIndex || this.indexing || this.committingIndex || this.flushingFileUpdates;
   }
 
   private provider(): OllamaEmbeddingProvider {
@@ -265,45 +329,86 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private scheduleFileUpdate(file: TAbstractFile): void {
+    this.queueVaultChange(file instanceof TFolder ? { kind: "folder-delete", path: file.path } : { kind: "path", path: file.path });
+  }
+
+  private scheduleRename(file: TAbstractFile, oldPath: string): void {
+    this.queueVaultChange({ kind: "rename", oldPath, newPath: file.path, isFolder: file instanceof TFolder });
+  }
+
+  private queueVaultChange(change: VaultChange): void {
     this.vaultRevision.noteChange();
+    this.pendingVaultChanges.enqueue(change, this.vaultRevision.value);
+    // Recovery/defer state only suppresses immediate work or a repeat modal;
+    // it must never make a vault event disappear.
+    if (this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred) return;
     if (this.isBuildActive()) {
-      this.pendingChangedPaths.add(file.path);
       return;
     }
     if (!this.index.isReady(this.indexIdentity())) return;
-    this.pendingChangedPaths.add(file.path);
+    this.schedulePendingFileUpdates();
+  }
+
+  private schedulePendingFileUpdates(): void {
+    if (!this.buildCancellation.isPluginActive) return;
     if (this.updateTimer) window.clearTimeout(this.updateTimer);
     this.updateTimer = window.setTimeout(() => void this.flushFileUpdates(), 500);
   }
 
-  private async flushFileUpdates(): Promise<void> {
-    if (this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
-    const paths = [...this.pendingChangedPaths];
-    this.pendingChangedPaths.clear();
-    for (const path of paths) await this.updateChangedFile(path);
-    // The active note is excluded from its own results. Re-indexing it must not
-    // trigger a second query after the typing query already scheduled above.
-    // Other changed notes can affect the visible candidate set, so coalesce
-    // those into one refresh after this update batch.
-    const activePath = this.latestMarkdownView?.file?.path;
-    if (paths.some((path) => path !== activePath)) this.refreshCurrentQuery();
+  /** Layout-ready startup check compares path/stat metadata only, never every note body. */
+  private async reconcileIndexAfterLayout(): Promise<void> {
+    if (!this.buildCancellation.isPluginActive || !this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred || this.isBuildActive()) return;
+    const scope = this.index.scope;
+    if (!scope) return;
+    try {
+      await runIndexReconciliation(
+        this.index.documents,
+        () => this.app.vault.getMarkdownFiles()
+          .filter((file) => !this.isExcluded(file.path, scope))
+          .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
+        (changes) => {
+          if (!changes.length || this.deferredLargeIndexUpdate.isDeferred) return;
+          this.vaultRevision.noteChange();
+          for (const change of changes) this.pendingVaultChanges.enqueue(change, this.vaultRevision.value);
+          this.schedulePendingFileUpdates();
+        }
+      );
+    } catch (error) {
+      console.error("[Palimpsest] Could not reconcile the local index with the vault", error);
+      new Notice("无法核对本地索引与 vault 文件；当前索引仍可用，可稍后全量重建。");
+    }
   }
 
-  private async updateChangedFile(filePath: string): Promise<void> {
-    if (this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
+  private async flushFileUpdates(): Promise<void> {
+    this.updateTimer = undefined;
+    if (!this.buildCancellation.isPluginActive || this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.flushingFileUpdates || this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
+    const changes = this.pendingVaultChanges.take();
+    if (!changes.length) return;
     const effectiveScope = this.index.scope;
     if (!effectiveScope) return;
-    const file = this.app.vault.getAbstractFileByPath(filePath);
-    const retained = this.index.chunks.filter((chunk) => chunk.filePath !== filePath);
+    this.flushingFileUpdates = true;
+    let failed = false;
+    let refreshQuery = false;
     try {
-      if (!(file instanceof TFile) || file.extension !== "md" || this.isExcluded(file.path, effectiveScope)) {
-        await this.commitIncrementalIndex(this.indexIdentity(), [...retained]);
-        return;
-      }
-      const indexed = await this.indexChangedFiles([file], this.index.reusableById(this.indexIdentity()));
-      await this.commitIncrementalIndex(this.indexIdentity(), [...retained, ...indexed]);
+      refreshQuery = await this.commitChangedDocuments(changes, effectiveScope);
     } catch (error) {
-      this.present({ kind: "query-failed", message: `增量索引失败：${error instanceof Error ? error.message : String(error)}` }, this.results);
+      // Restore this snapshot ahead of events received while it was processed.
+      this.pendingVaultChanges.restore(changes);
+      if (error instanceof IndexBuildCancelled && !this.buildCancellation.isPluginActive) return;
+      failed = true;
+      this.present({
+        kind: "index-failed",
+        message: `增量索引失败：${error instanceof Error ? error.message : String(error)}`,
+        detail: "现有索引仍可用。请全量重建以恢复待处理的文件变化。",
+        indexAction: "rebuild"
+      }, this.results);
+    } finally {
+      this.flushingFileUpdates = false;
+      if (!this.buildCancellation.isPluginActive) return;
+      if (refreshQuery) this.refreshCurrentQuery();
+      if (!failed && this.pendingVaultChanges.size && !this.isBuildActive() && this.index.isReady(this.indexIdentity())) {
+        this.schedulePendingFileUpdates();
+      }
     }
   }
 
@@ -334,6 +439,15 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       if (outcome === "cancelled") this.restoreAfterFullBuildPause();
     } catch (error) {
       this.presentBuildFailure(error, hadUsableIndex);
+    } finally {
+      // A failed/cancelled full build must leave captured vault events
+      // recoverable; a successful build has already discarded only events its
+      // scan covered. Never revive work after unload or while fallback/defer
+      // deliberately blocks patching.
+      if (this.buildCancellation.isPluginActive && this.pendingVaultChanges.size && this.index.isReady(this.indexIdentity()) &&
+        !this.fallbackGenerationInUse && !this.deferredLargeIndexUpdate.isDeferred) {
+        this.schedulePendingFileUpdates();
+      }
     }
   }
 
@@ -357,7 +471,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const vaultRevision = this.vaultRevision.value;
     const allFiles = this.app.vault.getMarkdownFiles();
     const files = allFiles.filter((file) => !this.isExcluded(file.path, scope));
-    const chunks: Chunk[] = [];
+    const documents: ScannedIndexDocument[] = [];
     this.preparingIndex = true;
     const buildToken = this.buildCancellation.startBuild();
     this.queryGate.invalidate();
@@ -366,13 +480,12 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       for (let index = 0; index < files.length; index++) {
         this.buildCancellation.assertBuildCanContinue(buildToken);
         const file = files[index];
-        const markdown = await this.app.vault.cachedRead(file);
-        this.buildCancellation.assertBuildCanContinue(buildToken);
-        chunks.push(...chunkMarkdown(file.path, markdown, {
-          targetLength: identity.chunkTargetLength,
-          maxLength: identity.chunkMaxLength,
-          minLength: identity.chunkMinLength
-        }));
+        try {
+          documents.push(await scanIndexDocument(file, identity, (source) => this.app.vault.cachedRead(source as TFile), () => this.buildCancellation.assertBuildCanContinue(buildToken)));
+        } catch (error) {
+          if (error instanceof IndexDocumentScanStale) throw new IndexBuildPlanStale("vault");
+          throw error;
+        }
         this.buildCancellation.assertBuildCanContinue(buildToken);
         this.presentIndexProgress({ phase: "scanning", current: index + 1, total: files.length, label: "正在扫描笔记" });
         if (index % 8 === 7) {
@@ -385,9 +498,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       // execution code is allowed to call document embedding.
       return preparePlan({
         totalMarkdownFiles: allFiles.length,
-        includedFiles: files.length,
-        chunks,
+        documents,
         reusableById: this.index.reusableById(identity),
+        reusableChunks: this.index.chunks,
         vaultRevision,
         scope,
         identity,
@@ -400,7 +513,6 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     } finally {
       this.buildCancellation.finishBuild(buildToken);
       this.preparingIndex = false;
-      if (this.index.isReady(this.indexIdentity()) && this.pendingChangedPaths.size) void this.flushFileUpdates();
     }
   }
 
@@ -425,11 +537,24 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         yieldToUi: () => this.yieldToUi(),
         onEmbeddingProgress: (current, total) => this.presentIndexProgress({ phase: "embedding", current, total, label: "正在生成向量" })
       });
-      this.buildCancellation.assertBuildCanContinue(buildToken);
-      this.presentIndexProgress({ phase: "saving", current: executed.chunks.length, total: executed.chunks.length, label: "正在保存索引" });
-      await this.commitFullIndex(executed.identity, executed.chunks, executed.scope, buildToken);
+      // This is the last ordinary-cancel barrier. Once durable publication
+      // begins, only plugin unload can prevent memory/UI follow-up.
+      this.buildCancellation.beginDurableCommit(buildToken);
+      const chunkCount = executed.documents.reduce((total, document) => total + document.chunks.length, 0);
+      this.presentIndexProgress({ phase: "saving", current: chunkCount, total: chunkCount, label: "正在保存索引" });
+      this.committingIndex = true;
+      try {
+        await this.commitFullIndex(executed.identity, executed.documents, executed.scope);
+      } finally {
+        this.committingIndex = false;
+        this.buildCancellation.finishDurableCommit(buildToken);
+      }
+      this.buildCancellation.assertPluginActive();
+      this.pendingVaultChanges.discardThrough(executed.vaultRevision);
+      this.deferredLargeIndexUpdate.clear();
+      this.fallbackGenerationInUse = false;
       this.syncQueryAvailability();
-      this.present({ kind: "complete", message: `索引完成：${executed.chunks.length} 个片段` }, this.results);
+      this.present({ kind: "complete", message: `索引完成：${chunkCount} 个片段` }, this.results);
       // Settings may have changed after execution began. In that case the
       // committed plan remains valid but query readiness follows new settings.
       this.indexing = false;
@@ -440,12 +565,11 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     } finally {
       if (buildToken) this.buildCancellation.finishBuild(buildToken);
       this.indexing = false;
-      if (this.index.isReady(this.indexIdentity()) && this.pendingChangedPaths.size) void this.flushFileUpdates();
-      if (!this.index.isReady(this.indexIdentity())) this.pendingChangedPaths.clear();
     }
   }
 
   private presentBuildFailure(error: unknown, hadUsableIndex: boolean): void {
+    if (!this.buildCancellation.isPluginActive) return;
     if (error instanceof IndexBuildCancelled) {
       this.present({
         kind: "index-cancelled",
@@ -464,57 +588,128 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   cancelIndex(): void {
-    if (!this.isBuildActive()) return;
+    if (!this.isBuildActive() || this.committingIndex) return;
     this.buildCancellation.cancelCurrentBuild();
   }
 
-  /** Incremental updates retain their existing immediate scan/embed behavior. */
-  private async indexChangedFiles(files: TFile[], reusable: Map<string, IndexedChunk>): Promise<IndexedChunk[]> {
-    const pending: Chunk[] = [];
-    const output: IndexedChunk[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const markdown = await this.app.vault.cachedRead(file);
-      const chunks = chunkMarkdown(file.path, markdown, {
-        targetLength: this.settings.chunkTargetLength,
-        maxLength: this.settings.chunkMaxLength,
-        minLength: this.settings.chunkMinLength
-      });
-      for (const chunk of chunks) {
-        const cached = reusable.get(chunk.id);
-        if (cached && cached.contentHash === chunk.contentHash) output.push({ ...chunk, vector: cached.vector });
-        else pending.push(chunk);
+  /** Prepares all vault reads and embeddings before one durable patch transaction. */
+  private async commitChangedDocuments(changes: readonly VaultChange[], scope: IndexScope): Promise<boolean> {
+    this.buildCancellation.assertPluginActive();
+    const markdownFiles = this.app.vault.getMarkdownFiles();
+    const byPath = new Map(markdownFiles.map((file) => [file.path, file]));
+    const plan = planVaultChanges({
+      changes,
+      indexedDocumentPaths: this.index.documents.map((document) => document.filePath),
+      currentMarkdownPaths: markdownFiles.map((file) => file.path),
+      isIncluded: (path) => !this.isExcluded(path, scope)
+    });
+    const files = plan.upsertPaths.map((path) => byPath.get(path)).filter((file): file is TFile => file !== undefined);
+    const documents = await this.scanIncrementalDocuments(files);
+    const current = { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope };
+    const prepared = prepareIncrementalIndexPlan({
+      documents,
+      deletes: plan.deletes,
+      reusableChunks: this.index.chunks,
+      current,
+      changes: this.incrementalChangeSummary(changes, plan.upsertPaths, plan.deletes)
+    });
+    if (!prepared.summary.documents && !plan.deletes.length) return false;
+    const outcome = await runPreparedIncrementalIndexUpdate({
+      needsConfirmation: isLargeIncrementalIndexPlan(prepared.summary),
+      confirm: () => confirmLargeIncrementalIndexUpdate(this.app, prepared.summary),
+      execute: () => executeIncrementalIndexPlan(prepared, {
+        current: { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.index.scope ?? scope },
+        batchSize: this.settings.embeddingBatchSize,
+        embedDocuments: async (chunks) => (await this.provider().embedDocuments(chunks.map(embeddingText))).vectors,
+        assertCanContinue: () => this.buildCancellation.assertPluginActive(),
+        yieldToUi: () => this.yieldToUi()
+      }),
+      commit: async (executed) => {
+        this.buildCancellation.assertPluginActive();
+        const durable = await this.requireIndexStore().commit({
+          kind: "patch-documents",
+          identity: this.indexIdentity(),
+          upserts: executed.upserts,
+          deletes: executed.deletes
+        });
+        // A successful durable write survives unload, but an unloading plugin
+        // must not mutate memory or the UI after it completes.
+        this.buildCancellation.assertPluginActive();
+        this.index.commit(durable);
+        this.buildCancellation.assertPluginActive();
       }
-      if (i % 8 === 7) await this.yieldToUi();
+    });
+    if (outcome === "cancelled") {
+      // Do not restore this batch: repeatedly showing the same confirmation is
+      // worse than explicitly leaving the known-good generation in service.
+      this.deferredLargeIndexUpdate.defer();
+      this.present({
+        kind: "index-cancelled",
+        message: "已取消大规模索引更新，正在继续使用原有索引",
+        detail: "请通过“重建索引”稍后处理这些变化。",
+        indexAction: "rebuild"
+      }, this.results);
+      return false;
     }
-    for (let start = 0; start < pending.length; start += this.settings.embeddingBatchSize) {
-      const batch = pending.slice(start, start + this.settings.embeddingBatchSize);
-      const response = await this.provider().embedDocuments(batch.map(embeddingText));
-      output.push(...batch.map((chunk, index) => ({ ...chunk, vector: response.vectors[index] })));
-      await this.yieldToUi();
+    const activePath = this.latestMarkdownView?.file?.path;
+    return [...plan.upsertPaths, ...plan.deletes].some((path) => path !== activePath);
+  }
+
+  private incrementalChangeSummary(changes: readonly VaultChange[], upserts: readonly string[], deletes: readonly string[]): IncrementalChangeSummary {
+    const indexed = new Set(this.index.documents.map((document) => document.filePath));
+    const renamePaths = new Set<string>();
+    for (const change of changes) {
+      if (change.kind !== "rename") continue;
+      if (!change.isFolder) renamePaths.add(change.newPath);
+      else {
+        const prefix = `${change.newPath}/`;
+        for (const path of upserts) if (path === change.newPath || path.startsWith(prefix)) renamePaths.add(path);
+      }
     }
-    return output;
+    const added = upserts.filter((path) => !indexed.has(path) && !renamePaths.has(path)).length;
+    const renamed = upserts.filter((path) => renamePaths.has(path)).length;
+    return { added, renamed, modified: upserts.length - added - renamed, deleted: deletes.length };
+  }
+
+  private async scanIncrementalDocuments(files: readonly TFile[]): Promise<ScannedIndexDocument[]> {
+    const documents: ScannedIndexDocument[] = [];
+    const identity = this.indexIdentity();
+    for (let index = 0; index < files.length; index++) {
+      documents.push(await scanIndexDocument(files[index], identity, (file) => this.app.vault.cachedRead(file as TFile), () => this.buildCancellation.assertPluginActive()));
+      if (index % 8 === 7) {
+        await this.yieldToUi();
+        this.buildCancellation.assertPluginActive();
+      }
+    }
+    return documents;
   }
 
   private presentIndexProgress(progress: IndexProgress): void {
     this.present({ kind: "indexing", message: progress.label, progress }, this.results);
   }
 
-  private async commitFullIndex(identity: IndexIdentity, chunks: IndexedChunk[], scope: IndexScope, buildToken: BuildCancellationToken): Promise<void> {
-    await this.persistIndexCandidate(this.index.fullReplacement(identity, chunks, scope), buildToken);
-  }
-
-  private async commitIncrementalIndex(identity: IndexIdentity, chunks: IndexedChunk[]): Promise<void> {
-    await this.persistIndexCandidate(this.index.incrementalReplacement(identity, chunks));
-  }
-
-  private async persistIndexCandidate(candidate: PersistentIndexData, buildToken?: BuildCancellationToken): Promise<void> {
-    this.buildCancellation.assertCommitCanProceed(buildToken);
-    await this.saveData({ settings: this.settings, index: candidate });
-    // saveData can yield to Obsidian lifecycle callbacks; never update the
-    // in-memory index after plugin unload, even for an incremental operation.
+  private async commitFullIndex(identity: IndexIdentity, documents: readonly (Omit<ScannedIndexDocument, "chunks"> & { chunks: IndexedChunk[] })[], scope: IndexScope): Promise<void> {
     this.buildCancellation.assertPluginActive();
-    this.index.commit(candidate);
+    const durable = await this.requireIndexStore().commit({
+      kind: "replace-all",
+      identity,
+      scope,
+      documents: documents.map((document) => ({
+        filePath: document.filePath,
+        fileName: document.fileName,
+        sourceMtime: document.sourceMtime,
+        sourceSize: document.sourceSize,
+        chunks: document.chunks.map((chunk) => ({ ...chunk, embeddingInputHash: embeddingInputHash(chunk) }))
+      }))
+    });
+    this.buildCancellation.assertPluginActive();
+    this.index.commit(durable);
+    this.buildCancellation.assertPluginActive();
+  }
+
+  private requireIndexStore(): IndexStore {
+    if (!this.indexStore) throw new Error("Local IndexedDB index storage is unavailable");
+    return this.indexStore;
   }
 
   private async yieldToUi(): Promise<void> {

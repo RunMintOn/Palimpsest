@@ -17,6 +17,7 @@ export class BuildCancellationToken {
  */
 export class BuildCancellationController {
   private currentBuild: BuildCancellationToken | undefined;
+  private durableCommitBuild: BuildCancellationToken | undefined;
   private unloaded = false;
 
   startBuild(): BuildCancellationToken {
@@ -26,17 +27,36 @@ export class BuildCancellationController {
   }
 
   cancelCurrentBuild(): void {
+    // Metadata publication cannot be safely "uncancelled" after it starts.
+    // Normal user cancellation therefore stops at the durable-commit boundary.
+    if (this.currentBuild === this.durableCommitBuild) return;
     this.currentBuild?.cancel();
+  }
+
+  /** Last ordinary-cancel barrier before a full-build durable commit starts. */
+  beginDurableCommit(token: BuildCancellationToken): void {
+    this.assertBuildCanContinue(token);
+    if (this.currentBuild !== token) throw new Error("Cannot commit a non-current index build");
+    this.durableCommitBuild = token;
+  }
+
+  finishDurableCommit(token: BuildCancellationToken): void {
+    if (this.durableCommitBuild === token) this.durableCommitBuild = undefined;
   }
 
   finishBuild(token: BuildCancellationToken): void {
     if (this.currentBuild === token) this.currentBuild = undefined;
+    this.finishDurableCommit(token);
   }
 
   unload(): void {
     this.unloaded = true;
-    this.cancelCurrentBuild();
+    // Unlike a user cancellation, unload remains a permanent barrier even if
+    // IndexedDB publication is already underway.
+    this.currentBuild?.cancel();
   }
+
+  get isPluginActive(): boolean { return !this.unloaded; }
 
   isBuildCancelled(token: BuildCancellationToken): boolean {
     return this.unloaded || token.isCancelled;

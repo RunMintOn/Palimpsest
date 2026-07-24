@@ -13,8 +13,19 @@ export interface Chunk {
   endLine: number;
 }
 
+/** Both embedding responses and persisted Float32Array values are numeric vectors. */
+export type NumericVector = number[] | Float32Array;
+
 export interface IndexedChunk extends Chunk {
-  vector: number[];
+  vector: NumericVector;
+}
+
+/** Source metadata retained for document-level persistence and change planning. */
+export interface IndexedDocumentMetadata {
+  filePath: string;
+  fileName: string;
+  sourceMtime: number;
+  sourceSize: number;
 }
 
 export interface IndexIdentity {
@@ -35,6 +46,8 @@ export interface PersistentIndexData {
   initialized?: boolean;
   /** Schema 3 snapshots the directories used by the successful full build. */
   scope?: IndexScope;
+  /** Documents include empty Markdown files, which have no query chunks. */
+  documents?: IndexedDocumentMetadata[];
 }
 
 export type IndexLifecycle = "uninitialized" | "ready" | "incompatible" | "building" | "cancelled" | "failed";

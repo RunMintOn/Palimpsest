@@ -6,7 +6,7 @@ export interface EmbeddingProvider {
 }
 
 export interface EmbeddingCallResult {
-  vectors: number[][];
+  vectors: Float32Array[];
   coldLoad: boolean;
 }
 
@@ -81,7 +81,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       if (!Array.isArray(vector) || vector.length !== this.dimensions || vector.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
         throw new EmbeddingError(`Embedding ${index + 1} is not a finite ${this.dimensions}-dimensional vector`, "validation");
       }
-      return vector as number[];
+      const normalized = Float32Array.from(vector);
+      if (normalized.some((value) => !Number.isFinite(value))) {
+        throw new EmbeddingError(`Embedding ${index + 1} cannot be represented as Float32Array`, "validation");
+      }
+      return normalized;
     });
     // Ollama may report a tiny non-zero preparation/load duration even while the
     // resident model is warm. The verified real cold load is seconds, so avoid
