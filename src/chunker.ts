@@ -13,6 +13,18 @@ interface Paragraph {
   breadcrumb: string[];
 }
 
+function sameBreadcrumb(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((heading, index) => heading === right[index]);
+}
+
+/**
+ * A structured, unambiguous identity for a chunk before occurrence numbering.
+ * JSON array encoding preserves breadcrumb boundaries (unlike a display join).
+ */
+function baseChunkIdentity(filePath: string, breadcrumb: readonly string[], contentHash: string): string {
+  return JSON.stringify([CHUNKER_VERSION, filePath, breadcrumb, contentHash]);
+}
+
 /** A deterministic non-cryptographic fingerprint, adequate for cache identity. */
 export function stableHash(value: string): string {
   let a = 0x811c9dc5;
@@ -98,10 +110,9 @@ export function chunkMarkdown(filePath: string, markdown: string, options: Chunk
   const groups: Paragraph[][] = [];
   let current: Paragraph[] = [];
   let currentLength = 0;
-  const sameHeading = (a: Paragraph, b: Paragraph) => a.breadcrumb.join("\u0000") === b.breadcrumb.join("\u0000");
   for (const paragraph of expanded) {
     const separator = current.length ? 2 : 0;
-    if (current.length && (!sameHeading(current[0], paragraph) || currentLength + separator + paragraph.text.length > options.maxLength || currentLength >= options.targetLength)) {
+    if (current.length && (!sameBreadcrumb(current[0].breadcrumb, paragraph.breadcrumb) || currentLength + separator + paragraph.text.length > options.maxLength || currentLength >= options.targetLength)) {
       groups.push(current);
       current = [];
       currentLength = 0;
@@ -117,19 +128,25 @@ export function chunkMarkdown(filePath: string, markdown: string, options: Chunk
     const previous = groups[i - 1];
     const length = group.map((p) => p.text).join("\n\n").length;
     const combined = previous.concat(group).map((p) => p.text).join("\n\n").length;
-    if (length < options.minLength && sameHeading(previous[0], group[0]) && combined <= options.maxLength) {
+    if (length < options.minLength && sameBreadcrumb(previous[0].breadcrumb, group[0].breadcrumb) && combined <= options.maxLength) {
       previous.push(...group);
       groups.splice(i, 1);
     }
   }
 
+  const occurrences = new Map<string, number>();
   return groups.map((group) => {
     const text = group.map((paragraph) => paragraph.text).join("\n\n");
     const first = group[0];
     const last = group.at(-1)!;
     const contentHash = stableHash(text);
+    const baseIdentity = baseChunkIdentity(filePath, first.breadcrumb, contentHash);
+    const occurrence = occurrences.get(baseIdentity) ?? 0;
+    occurrences.set(baseIdentity, occurrence + 1);
     return {
-      id: stableHash(`${CHUNKER_VERSION}\n${filePath}\n${first.breadcrumb.join(" > ")}\n${contentHash}`),
+      // Position is deliberately excluded: leading unrelated edits retain IDs.
+      // Repeated base identities receive deterministic, document-order ordinals.
+      id: stableHash(JSON.stringify([baseIdentity, occurrence])),
       contentHash,
       filePath,
       fileName: filename,

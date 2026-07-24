@@ -1,4 +1,4 @@
-export const CHUNKER_VERSION = "1";
+export const CHUNKER_VERSION = "2";
 
 export interface Chunk {
   id: string;

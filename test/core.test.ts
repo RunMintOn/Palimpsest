@@ -44,6 +44,36 @@ test("chunker joins short adjacent paragraphs but splits long paragraphs and has
   assert.ok(long.every((chunk) => chunk.text.length <= options.maxLength));
 });
 
+test("chunk IDs distinguish repeated occurrences without making unrelated edits invalidate unique chunks", () => {
+  const repeatedBody = "重复正文足够长，以便每个重复标题形成独立片段。";
+  const repeatedHeadings = `# 重复标题\n\n${repeatedBody}\n\n# 重复标题\n\n${repeatedBody}`;
+  const repeated = chunkMarkdown("repeated.md", repeatedHeadings, { targetLength: 20, maxLength: 100, minLength: 1 });
+  assert.equal(repeated.length, 2);
+  assert.deepEqual(repeated.map((chunk) => chunk.breadcrumb), [["重复标题"], ["重复标题"]]);
+  assert.deepEqual(repeated.map((chunk) => chunk.text), [repeatedBody, repeatedBody]);
+  assert.notEqual(repeated[0].id, repeated[1].id, "duplicate headings and body need distinct IDs");
+
+  const sameLineSplit = chunkMarkdown("split.md", "# A\n\naaaaaaaa", { targetLength: 4, maxLength: 4, minLength: 1 });
+  assert.deepEqual(sameLineSplit.map((chunk) => chunk.text), ["aaaa", "aaaa"]);
+  assert.equal(sameLineSplit[0].startLine, sameLineSplit[1].startLine, "both chunks originate on one line");
+  assert.notEqual(sameLineSplit[0].id, sameLineSplit[1].id, "same-line duplicate fragments need distinct IDs");
+
+  const stableAgain = chunkMarkdown("repeated.md", repeatedHeadings, { targetLength: 20, maxLength: 100, minLength: 1 });
+  assert.deepEqual(repeated.map((chunk) => chunk.id), stableAgain.map((chunk) => chunk.id), "same input has stable IDs");
+
+  const literalSeparator = chunkMarkdown("breadcrumb.md", "# A > B\n\n正文", { targetLength: 20, maxLength: 100, minLength: 1 });
+  const nestedHeadings = chunkMarkdown("breadcrumb.md", "# A\n\n## B\n\n正文", { targetLength: 20, maxLength: 100, minLength: 1 });
+  assert.notEqual(literalSeparator[0].id, nestedHeadings[0].id, "breadcrumb structure is part of identity");
+
+  const unique = "唯一且足够长的后续正文，应该保留其缓存身份。";
+  const original = chunkMarkdown("stable.md", `# 标题\n\n${unique}`, { targetLength: 20, maxLength: 100, minLength: 1 });
+  const inserted = chunkMarkdown("stable.md", `\n\n无关但足够长的前置正文。\n\n# 标题\n\n${unique}`, { targetLength: 20, maxLength: 100, minLength: 1 });
+  assert.equal(original[0].id, inserted.find((chunk) => chunk.text === unique)?.id, "unrelated leading content must not change a unique chunk ID");
+
+  const index = new PersistentIndex(identity);
+  assert.doesNotThrow(() => index.replacement(identity, repeated.map((chunk) => ({ ...chunk, vector: [1, 0, 0] }))), "fixed duplicate-content chunks are accepted by PersistentIndex");
+});
+
 test("query context uses current paragraph, heading, and prior paragraph with a length bound", () => {
   const markdown = "# 语义检索\n\n前一个段落讨论 embedding 如何编码中文知识。\n\n当前段落讨论在 Obsidian 编辑时实时召回相关片段。\n\n下一段";
   const context = buildQueryContext(markdown, 4, 300);
@@ -87,6 +117,13 @@ test("model or dimensions changes make a persisted index incompatible", () => {
   assert.equal(index.isCompatible(identity), true);
   assert.equal(index.isCompatible({ ...identity, dimensions: 4 }), false);
   assert.equal(index.isCompatible({ ...identity, model: "other" }), false);
+});
+
+test("an index made with an older chunker version is incompatible", () => {
+  const oldIdentity = { ...identity, chunkerVersion: "1" };
+  const oldIndex = new PersistentIndex(identity, { identity: oldIdentity, chunks: [], updatedAt: 1 });
+  assert.equal(oldIndex.isCompatible(identity), false);
+  assert.equal(oldIndex.lifecycle(identity), "incompatible");
 });
 
 test("legacy completed indexes migrate to ready, while an empty completed vault is also ready", () => {

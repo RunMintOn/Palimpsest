@@ -359,7 +359,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const lifecycle = this.index.lifecycle(this.indexIdentity());
     if (lifecycle === "ready") return;
     if (lifecycle === "incompatible") {
-      this.present({ kind: "index-needed", message: message ?? "索引配置已变化，请重建索引", indexAction: "rebuild" }, []);
+      this.present({ kind: "index-needed", message: message ?? "索引格式或配置已变化，请重建索引", indexAction: "rebuild" }, []);
       return;
     }
     this.present({
