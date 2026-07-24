@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
-    "build": "node esbuild.config.mjs"
+    "build": "node esbuild.config.mjs && node scripts/verify-bundle.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
