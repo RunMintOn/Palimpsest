@@ -8,7 +8,7 @@ import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { rankChunks } from "./retrieval";
 import { DEFAULT_SETTINGS, excludedDirectoryList, SideGrepSettings, SideGrepSettingTab } from "./settings";
-import { SidebarActions, SIDE_GREP_VIEW_TYPE, SideGrepView } from "./sidebar-view";
+import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
 
 interface PluginData {
@@ -37,9 +37,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.settings = { ...DEFAULT_SETTINGS, ...saved.settings };
     this.index = new PersistentIndex(this.indexIdentity(), saved.index);
     this.syncQueryAvailability();
-    this.registerView(SIDE_GREP_VIEW_TYPE, (leaf) => new SideGrepView(leaf, this));
+    this.registerView(PALIMPSEST_VIEW_TYPE, (leaf) => new SideGrepView(leaf, this));
     this.addSettingTab(new SideGrepSettingTab(this.app, this));
-    this.addCommand({ id: "open-sidebar", name: "打开 Side Grep 侧边栏", callback: () => void this.activateView() });
+    this.addCommand({ id: "open-sidebar", name: "打开 Palimpsest 侧边栏", callback: () => void this.activateView() });
     this.addCommand({ id: "rebuild-index", name: "建立/重建知识片段索引", callback: () => void this.rebuildIndex() });
     this.registerEvent(this.app.workspace.on("editor-change", (editor, view) => this.onEditorChange(editor, view)));
     this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
@@ -365,7 +365,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.present({
       kind: "index-needed",
       message: "尚未建立知识库索引",
-      detail: "建立索引后，Side Grep 才能从已有笔记中召回相关片段。",
+      detail: "建立索引后，Palimpsest 才能从已有笔记中召回相关片段。",
       indexAction: "build"
     }, []);
   }
@@ -373,13 +373,13 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private present(state: SidebarState, results: SearchResult[] = this.results): void {
     this.state = state;
     this.results = results;
-    this.app.workspace.getLeavesOfType(SIDE_GREP_VIEW_TYPE).forEach((leaf) => (leaf.view as unknown as SideGrepView).showResults(state, results));
+    this.app.workspace.getLeavesOfType(PALIMPSEST_VIEW_TYPE).forEach((leaf) => (leaf.view as unknown as SideGrepView).showResults(state, results));
   }
 
   async activateView(): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(SIDE_GREP_VIEW_TYPE)[0];
+    const existing = this.app.workspace.getLeavesOfType(PALIMPSEST_VIEW_TYPE)[0];
     const leaf: WorkspaceLeaf = existing ?? this.app.workspace.getRightLeaf(false)!;
-    await leaf.setViewState({ type: SIDE_GREP_VIEW_TYPE, active: true });
+    await leaf.setViewState({ type: PALIMPSEST_VIEW_TYPE, active: true });
     this.app.workspace.revealLeaf(leaf);
     (leaf.view as unknown as SideGrepView).showResults(this.state, this.results);
     if (existing) this.sidebarOpened();

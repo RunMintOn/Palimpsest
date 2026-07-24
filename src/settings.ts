@@ -51,7 +51,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Side Grep 设置" });
+    containerEl.createEl("h2", { text: "Palimpsest 设置" });
     containerEl.createEl("p", { text: "修改模型、维度或切分长度后，现有索引会标记为需重建，避免混用向量。" });
     this.text("Ollama endpoint", "本地 /api/embed URL", "endpoint");
     this.text("模型名称", "qwen3-embedding:0.6b", "model");

@@ -1,5 +1,5 @@
 {
-  "name": "obsdn-side-grep",
+  "name": "palimpsest",
   "version": "0.1.0",
   "private": true,
   "description": "Prototype Obsidian sidebar for live local semantic passage retrieval",

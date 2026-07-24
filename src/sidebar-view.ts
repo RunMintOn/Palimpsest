@@ -3,7 +3,7 @@ import { ExpansionPolicy, shouldAutoExpand } from "./expansion-policy";
 import { hasMaterialResultChange } from "./result-presentation";
 import { SearchResult, SidebarState } from "./types";
 
-export const SIDE_GREP_VIEW_TYPE = "obsdn-side-grep-sidebar";
+export const PALIMPSEST_VIEW_TYPE = "palimpsest-sidebar";
 
 export interface SidebarActions {
   openResult(result: SearchResult): Promise<void>;
@@ -45,8 +45,8 @@ export class SideGrepView extends ItemView {
   private expansionPolicyKey = "";
 
   constructor(leaf: WorkspaceLeaf, private readonly actions: SidebarActions) { super(leaf); }
-  getViewType(): string { return SIDE_GREP_VIEW_TYPE; }
-  getDisplayText(): string { return "Side Grep"; }
+  getViewType(): string { return PALIMPSEST_VIEW_TYPE; }
+  getDisplayText(): string { return "Palimpsest"; }
   getIcon(): string { return "search"; }
 
   showResults(state: SidebarState, results: SearchResult[] = this.results): void {
@@ -87,7 +87,7 @@ export class SideGrepView extends ItemView {
     root.addClass("obsdn-side-grep");
 
     const toolbar = root.createDiv({ cls: "obsdn-side-grep-toolbar" });
-    toolbar.createEl("h4", { text: "Side Grep", cls: "obsdn-side-grep-title" });
+    toolbar.createEl("h4", { text: "Palimpsest", cls: "obsdn-side-grep-title" });
     toolbar.createDiv({ cls: "obsdn-side-grep-toolbar-spacer" });
     this.statusIcon = toolbar.createDiv({ cls: "obsdn-side-grep-status-icon" });
 
