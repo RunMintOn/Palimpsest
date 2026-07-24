@@ -2,6 +2,8 @@ import { Editor, MarkdownView, Plugin, TAbstractFile, TFile, WorkspaceLeaf, requ
 import { chunkMarkdown, embeddingText } from "./chunker";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
 import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
+import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build-flow";
+import { confirmIndexBuild } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
 import { PersistentIndex } from "./persistent-index";
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded } from "./index-scope";
@@ -40,6 +42,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private results: SearchResult[] = [];
   private preparingIndex = false;
   private indexing = false;
+  private readonly fullIndexBuildRequests = new FullIndexBuildRequestGate();
   private readonly vaultRevision = new VaultRevision();
   private readonly buildCancellation = new BuildCancellationController();
 
@@ -58,7 +61,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.registerView(PALIMPSEST_VIEW_TYPE, (leaf) => new SideGrepView(leaf, this));
     this.addSettingTab(new SideGrepSettingTab(this.app, this));
     this.addCommand({ id: "open-sidebar", name: "打开 Palimpsest 侧边栏", callback: () => void this.activateView() });
-    this.addCommand({ id: "rebuild-index", name: "建立/重建知识片段索引", callback: () => void this.rebuildIndex() });
+    this.addCommand({ id: "rebuild-index", name: "准备建立/全量重建知识片段索引", callback: () => void this.requestFullIndexBuild() });
     this.registerEvent(this.app.workspace.on("editor-change", (editor, view) => this.onEditorChange(editor, view)));
     this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => this.onActiveLeafChange(leaf)));
@@ -119,6 +122,21 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       desired: { excludedDirectories: [...desired.excludedDirectories] },
       effective: effective && { excludedDirectories: [...effective.excludedDirectories] }
     };
+  }
+
+  /** Copy for the settings UI; all full builds still go through confirmation. */
+  getFullIndexBuildUi(): { description: string; buttonLabel: string } {
+    const lifecycle = this.index.lifecycle(this.indexIdentity());
+    if (lifecycle === "uninitialized") {
+      return { description: "尚无索引：扫描当前范围并建立索引。", buttonLabel: "准备建立索引" };
+    }
+    if (lifecycle === "incompatible") {
+      return { description: "配置已变化，需要重新建立索引。", buttonLabel: "准备全量重建" };
+    }
+    if (this.getIndexScopeView().status === "pending") {
+      return { description: "通过全量重建应用新的索引范围。", buttonLabel: "准备全量重建" };
+    }
+    return { description: "重新扫描全部范围，现有向量会尽量复用。", buttonLabel: "准备全量重建" };
   }
 
   private syncQueryAvailability(): void {
@@ -288,15 +306,46 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     }
   }
 
+  /** The only production full-build request path: scan, confirm, then execute. */
+  async requestFullIndexBuild(): Promise<void> {
+    return this.fullIndexBuildRequests.request(() => this.runFullIndexBuildRequest());
+  }
+
+  /** Compatibility name used by the sidebar CTA; it remains confirmation-safe. */
   async rebuildIndex(): Promise<void> {
-    if (this.isBuildActive()) return;
+    return this.requestFullIndexBuild();
+  }
+
+  private async runFullIndexBuildRequest(): Promise<void> {
     const hadUsableIndex = this.index.isReady(this.indexIdentity());
     try {
-      const plan = await this.prepareIndexBuild();
-      await this.executePreparedIndexBuild(plan);
+      const outcome = await runConfirmedIndexBuild({
+        prepare: async () => {
+          const plan = await this.prepareIndexBuild();
+          // Scanning has ended before the Modal opens: restore normal query or
+          // index-needed state instead of leaving a spinning scan indicator.
+          this.restoreAfterFullBuildPause();
+          return plan;
+        },
+        confirm: (plan) => confirmIndexBuild(this.app, plan.summary, hadUsableIndex),
+        execute: (plan) => this.executePreparedIndexBuild(plan)
+      });
+      if (outcome === "cancelled") this.restoreAfterFullBuildPause();
     } catch (error) {
       this.presentBuildFailure(error, hadUsableIndex);
     }
+  }
+
+  /** Leaves a prepared-but-unconfirmed build non-blocking and non-indexing. */
+  private restoreAfterFullBuildPause(): void {
+    this.syncQueryAvailability();
+    if (!this.index.isReady(this.indexIdentity())) {
+      this.showIndexRequirement();
+      return;
+    }
+    // Do not launch or clear a query merely because the confirmation closed:
+    // the existing result set remains usable until a normal query event occurs.
+    this.present({ kind: "waiting-input", message: "等待输入" }, this.results);
   }
 
   /** Scans a full build into an opaque plan without embedding or committing. */
@@ -408,7 +457,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const stale = error instanceof IndexBuildPlanStale;
     this.present({
       kind: "index-failed",
-      message: stale ? "构建计划已过期，请重新开始扫描" : unavailable ? "建库失败：Ollama 不可用" : `建库失败：${error instanceof Error ? error.message : String(error)}`,
+      message: stale ? "索引计划已经过期，请重新扫描后再试。" : unavailable ? "建库失败：Ollama 不可用" : `建库失败：${error instanceof Error ? error.message : String(error)}`,
       indexAction: "retry"
     }, hadUsableIndex ? this.results : []);
   }
@@ -486,7 +535,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.present({
       kind: "index-needed",
       message: "尚未建立知识库索引",
-      detail: "建立索引后，Palimpsest 才能从已有笔记中召回相关片段。",
+      detail: "建立前会先扫描并显示文件、片段和排除范围。如需排除目录，请先在“设置 → Palimpsest → 索引范围”中配置。",
       indexAction: "build"
     }, []);
   }

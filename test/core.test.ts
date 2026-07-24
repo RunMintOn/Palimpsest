@@ -5,6 +5,8 @@ import { chunkMarkdown } from "../src/chunker";
 import { EmbeddingError, OllamaEmbeddingProvider } from "../src/embedding-provider";
 import { shouldAutoExpand } from "../src/expansion-policy";
 import { BuildCancellationController, IndexBuildCancelled } from "../src/build-cancellation";
+import { indexBuildConfirmationModel, formatIndexBuildNumber } from "../src/index-build-confirmation";
+import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "../src/index-build-flow";
 import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, executePreparedIndexBuild, prepareIndexBuild } from "../src/index-build-plan";
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
 import { PersistentIndex } from "../src/persistent-index";
@@ -13,6 +15,8 @@ import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
 import { hasMaterialResultChange } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
+import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults } from "../src/settings-reset";
+import type { SideGrepSettings } from "../src/settings";
 import { CHUNKER_VERSION, Chunk, IndexedChunk } from "../src/types";
 
 const options = { targetLength: 120, maxLength: 180, minLength: 30 };
@@ -37,6 +41,26 @@ function buildPlan(chunks: Chunk[], reusable = new Map<string, IndexedChunk>(), 
     identity: overrides.identity ?? identity
   });
 }
+
+const defaultSettings: SideGrepSettings = {
+  endpoint: "http://127.0.0.1:11434/api/embed",
+  model: "qwen3-embedding:0.6b",
+  dimensions: 1024,
+  keepAlive: "5m",
+  queryDebounceMs: 800,
+  queryMaxLength: 1400,
+  chunkTargetLength: 650,
+  chunkMaxLength: 1100,
+  chunkMinLength: 80,
+  topK: 5,
+  maxPerFile: 2,
+  excludedDirectories: [".obsidian"],
+  queryInstruction: "instruction",
+  embeddingBatchSize: 16,
+  autoExpandCount: 3,
+  autoExpandThresholdEnabled: false,
+  autoExpandThreshold: 0.3
+};
 
 test("Chinese fixture: frontmatter is excluded, headings form breadcrumbs, and line numbers are retained", async () => {
   const markdown = await readFile(new URL("./fixtures/chinese-notes.md", import.meta.url), "utf8");
@@ -141,6 +165,49 @@ test("legacy excluded-directory strings migrate to a normalized structured scope
   assert.deepEqual(indexScope(".obsidian, templates"), { excludedDirectories: [".obsidian", "templates"] });
 });
 
+test("settings-section reset restores only its defaults and reports non-default sections", () => {
+  const changed: SideGrepSettings = {
+    ...defaultSettings,
+    endpoint: "http://other/api/embed",
+    model: "other-model",
+    topK: 9,
+    excludedDirectories: ["Archive"]
+  };
+  assert.equal(settingsSectionDiffersFromDefaults(changed, defaultSettings, "embedding"), true);
+  assert.equal(settingsSectionDiffersFromDefaults(changed, defaultSettings, "retrieval"), true);
+  assert.equal(settingsSectionDiffersFromDefaults(changed, defaultSettings, "scope"), true);
+  assert.equal(settingsSectionDiffersFromDefaults(changed, defaultSettings, "chunking"), false);
+
+  const embeddingRestored = resetSettingsSection(changed, defaultSettings, "embedding");
+  assert.equal(embeddingRestored.endpoint, defaultSettings.endpoint);
+  assert.equal(embeddingRestored.model, defaultSettings.model);
+  assert.equal(embeddingRestored.topK, 9, "other sections remain untouched");
+  assert.deepEqual(embeddingRestored.excludedDirectories, ["Archive"]);
+});
+
+test("scope reset copies default directories instead of sharing mutable settings arrays", () => {
+  const restored = resetSettingsSection(
+    { ...defaultSettings, excludedDirectories: ["Archive"] },
+    defaultSettings,
+    "scope"
+  );
+  assert.deepEqual(restored.excludedDirectories, [".obsidian"]);
+  assert.notStrictEqual(restored.excludedDirectories, defaultSettings.excludedDirectories);
+  restored.excludedDirectories.push("Templates");
+  assert.deepEqual(defaultSettings.excludedDirectories, [".obsidian"]);
+});
+
+test("every editable setting maps to the reset control for its own section", () => {
+  assert.equal(resetSectionForSetting("model"), "embedding");
+  assert.equal(resetSectionForSetting("queryDebounceMs"), "query");
+  assert.equal(resetSectionForSetting("chunkMaxLength"), "chunking");
+  assert.equal(resetSectionForSetting("topK"), "retrieval");
+  assert.equal(resetSectionForSetting("autoExpandThreshold"), "expansion");
+  assert.equal(resetSectionForSetting("embeddingBatchSize"), "indexBuild");
+  assert.equal(resetSectionForSetting("queryInstruction"), "queryInstruction");
+  assert.equal(resetSectionForSetting("excludedDirectories"), "scope");
+});
+
 test("index scope normalizes multiline paths, separators, empty entries, duplicates, and order", () => {
   assert.deepEqual(
     indexScope(" /Archive/ \nTemplates\\drafts, Archive, , /Templates/drafts/ "),
@@ -209,6 +276,94 @@ test("prepared build summarizes file counts and classifies only exact cached chu
     dimensions: identity.dimensions
   });
   assert.equal(plan.summary.totalChunks, plan.summary.reusableChunks + plan.summary.pendingChunks);
+});
+
+test("index-build confirmation uses distinct initial/rebuild copy and shows every prepared summary field", () => {
+  const plan = buildPlan([chunk("a", "a.md", "a")], new Map(), {
+    totalMarkdownFiles: 1038,
+    includedFiles: 712,
+    scope: indexScope(["Archive", "Templates"])
+  });
+  const initial = indexBuildConfirmationModel(plan.summary, false);
+  const rebuild = indexBuildConfirmationModel(plan.summary, true);
+  assert.equal(initial.title, "准备建立索引");
+  assert.equal(initial.confirmLabel, "开始建立");
+  assert.equal(rebuild.title, "准备全量重建");
+  assert.equal(rebuild.confirmLabel, "开始重建");
+  assert.deepEqual(initial.lines.map((line) => line.label), [
+    "Markdown 文件", "排除文件", "参与索引", "预计片段", "可复用向量",
+    "需要生成向量", "模型", "向量维度", "排除目录"
+  ]);
+  assert.equal(initial.lines.find((line) => line.label === "Markdown 文件")?.value, "1,038");
+  assert.equal(initial.lines.find((line) => line.label === "排除目录")?.value, "Archive、Templates");
+  assert.equal(formatIndexBuildNumber(5846), "5,846");
+});
+
+test("index-build confirmation names an empty exclusion scope and fully reusable vectors", () => {
+  const reusable = indexed("a", "a.md", "old", [1, 0, 0]);
+  const plan = buildPlan([chunk("a", "a.md", "fresh")], new Map([["a", reusable]]), {
+    totalMarkdownFiles: 1,
+    includedFiles: 1,
+    scope: indexScope([])
+  });
+  const model = indexBuildConfirmationModel(plan.summary, false);
+  assert.equal(model.lines.find((line) => line.label === "排除目录")?.value, "未排除目录");
+  assert.equal(model.noEmbeddingMessage, "所有向量均可复用，本次无需重新生成向量。");
+});
+
+test("confirmed full-build flow does not execute on cancellation and executes once after confirmation", async () => {
+  const plan = buildPlan([chunk("a", "a.md", "a")]);
+  let executeCalls = 0;
+  const cancelled = await runConfirmedIndexBuild({
+    prepare: async () => plan,
+    confirm: async () => false,
+    execute: async () => { executeCalls++; }
+  });
+  assert.equal(cancelled, "cancelled");
+  assert.equal(executeCalls, 0);
+
+  const executed = await runConfirmedIndexBuild({
+    prepare: async () => plan,
+    confirm: async () => true,
+    execute: async () => { executeCalls++; }
+  });
+  assert.equal(executed, "executed");
+  assert.equal(executeCalls, 1);
+});
+
+test("confirmed full-build flow preserves stale-plan validation before any embedding", async () => {
+  const plan = buildPlan([chunk("a", "a.md", "a")]);
+  let embeddingCalls = 0;
+  await assert.rejects(() => runConfirmedIndexBuild({
+    prepare: async () => plan,
+    confirm: async () => true,
+    execute: async (prepared) => {
+      await executePreparedIndexBuild(prepared, {
+        current: { vaultRevision: 2, identity, scope: indexScope("Archive") },
+        batchSize: 1,
+        embedDocuments: async () => { embeddingCalls++; return [[1, 0, 0]]; },
+        assertCanContinue: () => undefined,
+        yieldToUi: async () => undefined
+      });
+    }
+  }), IndexBuildPlanStale);
+  assert.equal(embeddingCalls, 0);
+});
+
+test("full-build request gate merges overlapping requests, including confirmation time", async () => {
+  const gate = new FullIndexBuildRequestGate();
+  let starts = 0;
+  let release: () => void = () => undefined;
+  const blocker = new Promise<void>((resolve) => { release = resolve; });
+  const first = gate.request(async () => { starts++; await blocker; });
+  const second = gate.request(async () => { starts++; });
+  assert.strictEqual(first, second);
+  await Promise.resolve();
+  assert.equal(starts, 1);
+  assert.equal(gate.isActive, true);
+  release();
+  await first;
+  assert.equal(gate.isActive, false);
 });
 
 test("prepared build executes pending chunks only, keeps scan order, and retains fresh chunk metadata", async () => {

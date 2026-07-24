@@ -36,7 +36,6 @@ export class SideGrepView extends ItemView {
   private shellReady = false;
   private statusIcon!: HTMLElement;
   private refreshButton!: HTMLButtonElement;
-  private indexButton!: HTMLButtonElement;
   private indexPanel!: HTMLElement;
   private emptyState!: HTMLElement;
   private resultsEl!: HTMLElement;
@@ -98,13 +97,6 @@ export class SideGrepView extends ItemView {
     setIcon(this.refreshButton, "refresh-cw");
     this.refreshButton.addEventListener("click", () => this.actions.refreshCurrentQuery());
 
-    this.indexButton = toolbar.createEl("button", {
-      cls: "clickable-icon obsdn-side-grep-toolbar-button",
-      attr: { "aria-label": "重建索引", title: "重建索引" }
-    });
-    setIcon(this.indexButton, "database");
-    this.indexButton.addEventListener("click", () => void this.actions.rebuildIndex());
-
     this.indexPanel = root.createDiv({ cls: "obsdn-side-grep-index-panel" });
     this.emptyState = root.createDiv({ cls: "obsdn-side-grep-empty-state" });
     this.resultsEl = root.createDiv({ cls: "obsdn-side-grep-results" });
@@ -131,9 +123,7 @@ export class SideGrepView extends ItemView {
 
     const indexActionVisible = Boolean(this.state.indexAction) || this.state.kind === "indexing";
     this.refreshButton.style.display = indexActionVisible ? "none" : "";
-    this.indexButton.style.display = indexActionVisible ? "none" : "";
     this.refreshButton.disabled = this.state.kind === "indexing";
-    this.indexButton.disabled = this.state.kind === "indexing";
   }
 
   private updateIndexPanel(): void {

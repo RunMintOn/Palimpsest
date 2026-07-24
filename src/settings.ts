@@ -1,6 +1,7 @@
 import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from "obsidian";
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope } from "./index-scope";
 import SideGrepPlugin from "./main";
+import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults, SettingsResetSection } from "./settings-reset";
 
 export interface SideGrepSettings {
   endpoint: string;
@@ -78,46 +79,105 @@ class ExcludedDirectorySuggestModal extends FuzzySuggestModal<TFolder> {
   }
 }
 
+type SettingsPage = "index" | "embedding" | "retrieval";
+
+const settingsPages: readonly { id: SettingsPage; label: string }[] = [
+  { id: "index", label: "索引" },
+  { id: "embedding", label: "Embedding" },
+  { id: "retrieval", label: "检索" }
+];
+
 export class SideGrepSettingTab extends PluginSettingTab {
   private scopeSaving = false;
+  private fullBuildRequesting = false;
+  private readonly resettingSections = new Set<SettingsResetSection>();
+  private readonly resetControlEls = new Map<SettingsResetSection, HTMLElement>();
+  private activePage: SettingsPage = "index";
 
   constructor(app: App, private readonly plugin: SideGrepPlugin) { super(app, plugin); }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Palimpsest 设置" });
-    containerEl.createEl("p", { text: "修改模型、维度或切分长度后，现有索引会标记为需重建，避免混用向量。" });
+    this.resetControlEls.clear();
+    this.pageNavigation();
+    if (this.activePage === "index") this.indexPage();
+    else if (this.activePage === "embedding") this.embeddingPage();
+    else this.retrievalPage();
+  }
+
+  private pageNavigation(): void {
+    const navigation = new Setting(this.containerEl).setName("设置页面");
+    for (const page of settingsPages) {
+      navigation.addButton((button) => {
+        button
+          .setButtonText(page.label)
+          .onClick(() => {
+            if (this.activePage === page.id) return;
+            this.activePage = page.id;
+            this.display();
+          });
+        if (page.id === this.activePage) button.setCta();
+      });
+    }
+  }
+
+  private indexPage(): void {
     this.indexScopeSettings();
-    this.heading("Embedding 服务");
+    this.heading("索引构建", "indexBuild");
+    this.fullIndexBuildSetting();
+    this.number("建库批量大小", "每次 Ollama 文档 embedding 数", "embeddingBatchSize", 1);
+    this.heading("片段切分", "chunking");
+    this.number("片段目标长度", "推荐 500–700 字符", "chunkTargetLength", 1);
+    this.number("片段最大长度", "推荐 1000–1200 字符", "chunkMaxLength", 1);
+    this.number("片段最小有效长度", "短而有意义的笔记仍可索引", "chunkMinLength", 1);
+  }
+
+  private embeddingPage(): void {
+    this.heading("Embedding 服务", "embedding");
     this.text("Ollama endpoint", "本地 /api/embed URL", "endpoint");
     this.text("模型名称", "qwen3-embedding:0.6b", "model");
     this.number("Embedding dimensions", "默认 1024；改变后必须重建", "dimensions", 32);
     this.text("keep_alive", "5m", "keepAlive");
-    this.heading("查询与召回");
-    this.number("查询 debounce (ms)", "停止输入多久后查询", "queryDebounceMs", 100);
-    this.number("查询最大长度", "局部上下文最大字符数", "queryMaxLength", 64);
-    this.heading("片段切分");
-    this.number("片段目标长度", "推荐 500–700 字符", "chunkTargetLength", 1);
-    this.number("片段最大长度", "推荐 1000–1200 字符", "chunkMaxLength", 1);
-    this.number("片段最小有效长度", "短而有意义的笔记仍可索引", "chunkMinLength", 1);
-    this.heading("检索结果");
-    this.number("Top K", "返回结果数", "topK", 1);
-    this.number("每文件最大结果数", "默认最多两个片段", "maxPerFile", 1);
-    this.heading("自动展开");
-    this.expansionSettings();
-    this.heading("索引构建");
-    this.number("建库批量大小", "每次 Ollama 文档 embedding 数", "embeddingBatchSize", 1);
-    this.heading("查询指令");
+    this.heading("查询指令", "queryInstruction");
     this.queryInstruction();
   }
 
-  private heading(name: string): void {
-    new Setting(this.containerEl).setName(name).setHeading();
+  private retrievalPage(): void {
+    this.heading("查询", "query");
+    this.number("查询 debounce (ms)", "停止输入多久后查询", "queryDebounceMs", 100);
+    this.number("查询最大长度", "局部上下文最大字符数", "queryMaxLength", 64);
+    this.heading("检索结果", "retrieval");
+    this.number("Top K", "返回结果数", "topK", 1);
+    this.number("每文件最大结果数", "默认最多两个片段", "maxPerFile", 1);
+    this.heading("自动展开", "expansion");
+    this.expansionSettings();
+  }
+
+  private heading(name: string, resetSection?: SettingsResetSection): void {
+    const setting = new Setting(this.containerEl).setName(name).setHeading();
+    if (resetSection) {
+      setting.addExtraButton((button) => {
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip(`恢复“${name}”默认设置`)
+          .setDisabled(this.resettingSections.has(resetSection))
+          .onClick(() => void this.restoreDefaultSection(resetSection));
+        this.resetControlEls.set(resetSection, button.extraSettingsEl);
+        this.refreshResetControl(resetSection);
+      });
+    }
+  }
+
+  /** Changes only the section icon, so text inputs keep focus while the user types. */
+  private refreshResetControl(section: SettingsResetSection): void {
+    const control = this.resetControlEls.get(section);
+    if (!control) return;
+    control.style.display = settingsSectionDiffersFromDefaults(this.plugin.settings, DEFAULT_SETTINGS, section) ? "" : "none";
   }
 
   private indexScopeSettings(): void {
-    this.containerEl.createEl("h3", { text: "索引范围" });
+    this.heading("索引范围", "scope");
     this.containerEl.createEl("p", { text: "以下目录不会参与全文索引。修改会立即保存，但需要完成一次全量重建后才会应用到当前索引。" });
     this.indexScopeStatus();
 
@@ -132,7 +192,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
       .setName("添加排除目录")
       .addButton((button) => button
         .setButtonText("选择目录")
-        .setDisabled(this.scopeSaving)
+        .setDisabled(this.scopeSaving || this.resettingSections.has("scope"))
         .onClick(() => this.openDirectoryPicker()));
   }
 
@@ -159,14 +219,14 @@ export class SideGrepSettingTab extends PluginSettingTab {
     setting.addExtraButton((button) => button
       .setIcon("trash")
       .setTooltip("删除排除目录")
-      .setDisabled(this.scopeSaving)
+      .setDisabled(this.scopeSaving || this.resettingSections.has("scope"))
       .onClick(() => void this.saveExcludedDirectories(
         this.plugin.settings.excludedDirectories.filter((excluded) => excluded !== directory)
       )));
   }
 
   private openDirectoryPicker(): void {
-    if (this.scopeSaving) return;
+    if (this.scopeSaving || this.resettingSections.has("scope")) return;
     const folders = this.app.vault.getAllFolders(false);
     const eligiblePaths = new Set(filterExcludedDirectoryCandidates(
       folders.filter((folder) => !folder.isRoot()).map((folder) => folder.path),
@@ -198,6 +258,45 @@ export class SideGrepSettingTab extends PluginSettingTab {
 
   private scopeLabel(directories: readonly string[]): string {
     return directories.length ? directories.join("、") : "未排除目录";
+  }
+
+  private async restoreDefaultSection(section: SettingsResetSection): Promise<void> {
+    if (this.resettingSections.has(section)) return;
+    const previous = this.plugin.settings;
+    this.resettingSections.add(section);
+    this.plugin.settings = resetSettingsSection(previous, DEFAULT_SETTINGS, section);
+    this.display();
+    try {
+      await this.plugin.saveSettings();
+      this.plugin.onSettingsChanged();
+    } catch (error) {
+      this.plugin.settings = previous;
+      new Notice(`恢复默认设置失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.resettingSections.delete(section);
+      this.display();
+    }
+  }
+
+  private fullIndexBuildSetting(): void {
+    const build = this.plugin.getFullIndexBuildUi();
+    new Setting(this.containerEl)
+      .setName("全量索引")
+      .setDesc(build.description)
+      .addButton((button) => button
+        .setButtonText(build.buttonLabel)
+        .setDisabled(this.fullBuildRequesting)
+        .onClick(async () => {
+          if (this.fullBuildRequesting) return;
+          this.fullBuildRequesting = true;
+          button.setDisabled(true);
+          try {
+            await this.plugin.requestFullIndexBuild();
+          } finally {
+            this.fullBuildRequesting = false;
+            this.display();
+          }
+        }));
   }
 
   private expansionSettings(): void {
@@ -262,6 +361,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
 
   private async persistSetting(key: keyof SideGrepSettings, value: SideGrepSettings[keyof SideGrepSettings]): Promise<void> {
     (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    this.refreshResetControl(resetSectionForSetting(key));
     await this.plugin.saveSettings();
     this.plugin.onSettingsChanged();
   }
