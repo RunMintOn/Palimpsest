@@ -17,6 +17,7 @@ import { completionActions } from "./index-update-coordination";
 import { runIndexReconciliation } from "./index-reconciliation";
 import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded, sameIndexScope } from "./index-scope";
+import { canApplyIndexScopeChange, shouldRefreshAfterIndexScopeChange } from "./index-scope-application";
 import { planIndexScopeTransition } from "./index-scope-transition";
 import { buildQueryContext } from "./query-context";
 import { QueryGate } from "./query-gate";
@@ -169,10 +170,18 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   /** Narrow settings seam: scope patches require a ready, compatible non-fallback index. */
   getIndexScopeApplicationUi(): { available: boolean; applying: boolean } {
-    const pending = this.getIndexScopeView().status === "pending";
+    const applying = this.applyingIndexScope;
     return {
-      available: pending && !this.applyingIndexScope && !this.isBuildActive() && !this.fullIndexBuildRequests.isActive && !this.fallbackGenerationInUse && this.index.isReady(this.indexIdentity()),
-      applying: this.applyingIndexScope
+      available: canApplyIndexScopeChange({
+        scopePending: this.getIndexScopeView().status === "pending",
+        indexReady: this.index.isReady(this.indexIdentity()),
+        buildActive: this.isBuildActive(),
+        fullBuildRequestActive: this.fullIndexBuildRequests.isActive,
+        fallbackGenerationInUse: this.fallbackGenerationInUse,
+        deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
+        applying
+      }),
+      applying
     };
   }
 
@@ -271,8 +280,10 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       });
       if (outcome === "cancelled") return;
       patchSucceeded = true;
-      const activePath = this.latestMarkdownView?.file?.path;
-      refreshRequested = [...transition.upsertPaths, ...transition.deletePaths].some((path) => path !== activePath);
+      refreshRequested = shouldRefreshAfterIndexScopeChange({
+        upsertCount: transition.upsertPaths.length,
+        deleteCount: transition.deletePaths.length
+      });
       if (this.buildCancellation.isPluginActive) new Notice("索引范围已更新。");
     } catch (error) {
       console.error("[Palimpsest] Could not apply index scope changes", error);
