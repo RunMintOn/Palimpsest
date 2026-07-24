@@ -28,6 +28,21 @@ export interface IndexedDocumentMetadata {
   sourceSize: number;
 }
 
+/** A stable, document-local reason why a note was deliberately not indexed. */
+export type SkippedDocumentReasonCode = "invalid-chunk-structure";
+
+/**
+ * Persisted instead of chunks when one stable file cannot produce a valid
+ * storage candidate. It deliberately contains neither source text nor errors.
+ */
+export interface SkippedIndexedDocument {
+  filePath: string;
+  fileName: string;
+  sourceMtime: number;
+  sourceSize: number;
+  reasonCode: SkippedDocumentReasonCode;
+}
+
 export interface IndexIdentity {
   model: string;
   dimensions: number;
@@ -48,6 +63,8 @@ export interface PersistentIndexData {
   scope?: IndexScope;
   /** Documents include empty Markdown files, which have no query chunks. */
   documents?: IndexedDocumentMetadata[];
+  /** Documents deliberately skipped during scanning, kept apart from empty notes. */
+  skippedDocuments?: SkippedIndexedDocument[];
 }
 
 export type IndexLifecycle = "uninitialized" | "ready" | "incompatible" | "building" | "cancelled" | "failed";

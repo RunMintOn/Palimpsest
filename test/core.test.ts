@@ -305,6 +305,7 @@ test("prepared build summarizes file counts and classifies only exact cached chu
     totalChunks: 2,
     reusableChunks: 1,
     pendingChunks: 1,
+    skippedDocuments: 0,
     scope: indexScope("Archive"),
     model: identity.model,
     dimensions: identity.dimensions
@@ -477,11 +478,38 @@ test("full-build execution returns only its document scan snapshot, including em
   assert.equal(executed.documents.some((document) => document.filePath === "added-after-scan.md"), false);
 });
 
+test("a skipped document remains in the full-build result without requesting an embedding", async () => {
+  const scanned = { filePath: "good.md", fileName: "good", sourceMtime: 1, sourceSize: 4, chunks: [chunk("good", "good.md", "good")] };
+  const skipped = { filePath: "bad.md", fileName: "bad", sourceMtime: 2, sourceSize: 8, reasonCode: "invalid-chunk-structure" as const };
+  const plan = prepareIndexBuild({
+    totalMarkdownFiles: 2,
+    documents: [scanned],
+    skippedDocuments: [skipped],
+    reusableById: new Map(),
+    vaultRevision: 1,
+    scope: indexScope([]),
+    identity
+  });
+  let embedded: string[] = [];
+  const executed = await executePreparedIndexBuild(plan, {
+    current: { vaultRevision: 1, identity, scope: indexScope([]) },
+    batchSize: 1,
+    embedDocuments: async (chunks) => { embedded = chunks.map((item) => item.filePath); return [[1, 0, 0]]; },
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.deepEqual(embedded, ["good.md"]);
+  assert.deepEqual(executed.skippedDocuments, [skipped]);
+  assert.equal(plan.summary.skippedDocuments, 1);
+  assert.equal(plan.summary.excludedFiles, 0);
+});
+
 test("empty vault and fully reusable plans do not request document embeddings", async () => {
   const empty = buildPlan([], new Map(), { totalMarkdownFiles: 0, includedFiles: 0 });
   assert.deepEqual(empty.summary, {
     totalMarkdownFiles: 0, excludedFiles: 0, includedFiles: 0,
     totalChunks: 0, reusableChunks: 0, pendingChunks: 0,
+    skippedDocuments: 0,
     scope: indexScope("Archive"), model: identity.model, dimensions: identity.dimensions
   });
   let calls = 0;

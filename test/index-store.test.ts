@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import "fake-indexeddb/auto";
-import { createIndexStore, IndexedDocument } from "../src/index-store";
+import { createIndexStore, IndexDocument, IndexedDocument } from "../src/index-store";
 import { indexScope } from "../src/index-scope";
 import { CHUNKER_VERSION, IndexIdentity, NumericVector } from "../src/types";
 import { ensureVaultIdentity, VaultIdentityDataAdapter } from "../src/vault-identity";
@@ -42,7 +42,7 @@ function document(filePath: string, text: string, vector: NumericVector = [1, 2,
   };
 }
 
-async function replace(store: ReturnType<typeof createIndexStore>, documents: readonly IndexedDocument[], replacementIdentity = identity) {
+async function replace(store: ReturnType<typeof createIndexStore>, documents: readonly IndexDocument[], replacementIdentity = identity) {
   return store.commit({ kind: "replace-all", identity: replacementIdentity, scope: indexScope(["Archive"]), documents });
 }
 
@@ -206,6 +206,52 @@ test("replace-all retains an empty document for later folder-change planning", a
   }
 });
 
+test("IndexStore persists skipped documents separately from successfully empty documents", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    const empty = { ...document("empty.md", "empty"), chunks: [] };
+    const skipped = { filePath: "bad.md", fileName: "bad", sourceMtime: 2, sourceSize: 9, reasonCode: "invalid-chunk-structure" as const };
+    await replace(store, [empty, skipped]);
+    store.close();
+    const reopened = createIndexStore(vaultA);
+    try {
+      const loaded = await reopened.load();
+      assert.equal(loaded.status, "ready");
+      assert.deepEqual(loaded.data.documents?.map((item) => item.filePath), ["empty.md"]);
+      assert.deepEqual(loaded.data.skippedDocuments, [skipped]);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("IndexStore reads pre-skip-schema indexed records as indexed documents", async () => {
+  const store = createIndexStore(vaultA);
+  await replace(store, [document("legacy.md", "legacy")]);
+  store.close();
+  await withRawDatabase(async (database) => {
+    const transaction = database.transaction([METADATA, DOCUMENTS], "readwrite");
+    const done = transactionDone(transaction);
+    const metadata = await requestResult(transaction.objectStore(METADATA).get(vaultA)) as { currentGeneration: string };
+    const key = [vaultA, metadata.currentGeneration, "legacy.md"];
+    const legacy = await requestResult(transaction.objectStore(DOCUMENTS).get(key)) as Record<string, unknown>;
+    delete legacy.kind;
+    transaction.objectStore(DOCUMENTS).put(legacy);
+    await done;
+  });
+  const reopened = createIndexStore(vaultA);
+  try {
+    const loaded = await reopened.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.documents?.map((document) => document.filePath), ["legacy.md"]);
+    assert.deepEqual(loaded.data.skippedDocuments, []);
+  } finally {
+    reopened.close();
+  }
+});
+
 test("startup cleanup removes unpublished generations without touching the published generation", async () => {
   const store = createIndexStore(vaultA);
   try {
@@ -328,6 +374,41 @@ test("patch-documents atomically updates, deletes, and inserts documents", async
     const loaded = await store.load();
     assert.equal(loaded.status, "ready");
     assert.deepEqual(loaded.data.chunks.map((chunk) => `${chunk.filePath}:${chunk.text}`).sort(), ["insert.md:insert", "update.md:new"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("patch-documents atomically transitions indexed documents to skipped and skipped documents to indexed", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("note.md", "old")]);
+    const skipped = { filePath: "note.md", fileName: "note", sourceMtime: 2, sourceSize: 4, reasonCode: "invalid-chunk-structure" as const };
+    await store.commit({ kind: "patch-documents", identity, upserts: [skipped], deletes: [] });
+    let loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.chunks, []);
+    assert.deepEqual(loaded.data.skippedDocuments, [skipped]);
+
+    await store.commit({ kind: "patch-documents", identity, upserts: [document("note.md", "new")], deletes: [] });
+    loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.chunks.map((chunk) => chunk.text), ["new"]);
+    assert.deepEqual(loaded.data.skippedDocuments, []);
+  } finally {
+    store.close();
+  }
+});
+
+test("deleting a skipped document removes its persisted report record", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    const skipped = { filePath: "deleted.md", fileName: "deleted", sourceMtime: 2, sourceSize: 4, reasonCode: "invalid-chunk-structure" as const };
+    await replace(store, [skipped]);
+    await store.commit({ kind: "patch-documents", identity, upserts: [], deletes: ["deleted.md"] });
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.skippedDocuments, []);
   } finally {
     store.close();
   }

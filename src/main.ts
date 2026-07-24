@@ -7,9 +7,9 @@ import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
 import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build-flow";
 import { confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
-import { IndexDocumentScanStale, ScannedIndexDocument, scanIndexDocument } from "./index-document-scan";
+import { IndexDocumentScanStale, IndexDocumentStructureError, ScannedIndexDocument, scanIndexDocument } from "./index-document-scan";
 import { PersistentIndex } from "./persistent-index";
-import { createIndexStore, IndexStore } from "./index-store";
+import { createIndexStore, IndexDocument, IndexStore } from "./index-store";
 import { indexLoadRecoveryMessage } from "./index-load-feedback";
 import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
 import { executeIncrementalIndexPlan, IncrementalChangeSummary, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "./incremental-index-plan";
@@ -23,7 +23,7 @@ import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
-import { CHUNKER_VERSION, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
+import { CHUNKER_VERSION, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState, SkippedIndexedDocument } from "./types";
 import { ensureVaultIdentity } from "./vault-identity";
 import { planVaultChanges, VaultChange, VaultChangeQueue } from "./vault-change-plan";
 
@@ -60,6 +60,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private readonly deferredLargeIndexUpdate = new BulkIndexUpdateDeferral();
   /** A fallback generation is queryable but deliberately not patchable in place. */
   private fallbackGenerationInUse = false;
+  private retryingSkippedDocuments = false;
 
   async onload(): Promise<void> {
     let saved: unknown;
@@ -178,10 +179,36 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   /** Small, user-facing status only; IndexedDB cannot reliably report this vault's disk bytes. */
-  getLocalIndexStatus(): { status: "uninitialized" | "ready" | "incompatible"; documents?: number; chunks?: number } {
+  getLocalIndexStatus(): { status: "uninitialized" | "ready" | "incompatible"; documents?: number; chunks?: number; skipped?: number } {
     const lifecycle = this.index.lifecycle(this.indexIdentity());
     if (lifecycle === "uninitialized") return { status: "uninitialized" };
-    return { status: lifecycle === "ready" ? "ready" : "incompatible", documents: this.index.documents.length, chunks: this.index.size };
+    return { status: lifecycle === "ready" ? "ready" : "incompatible", documents: this.index.documents.length, chunks: this.index.size, skipped: this.index.skippedDocuments.length };
+  }
+
+  /** Settings-only view of safe skip metadata; source text and errors never leave IndexStore. */
+  getSkippedDocumentReport(): { documents: readonly SkippedIndexedDocument[]; retrying: boolean } {
+    return { documents: this.index.skippedDocuments, retrying: this.retryingSkippedDocuments };
+  }
+
+  /** Retries only persisted skipped paths through the normal incremental pipeline. */
+  async retrySkippedDocuments(): Promise<void> {
+    if (this.retryingSkippedDocuments || !this.index.skippedDocuments.length) return;
+    if (this.isBuildActive()) throw new Error("索引正在更新，完成后再重试未索引文档");
+    const scope = this.index.scope;
+    if (!scope) throw new Error("当前索引不可用于增量重试，请先全量重建");
+    this.retryingSkippedDocuments = true;
+    this.flushingFileUpdates = true;
+    try {
+      const changes = this.index.skippedDocuments.map((document) => ({ kind: "path", path: document.filePath } as const));
+      const refreshQuery = await this.commitChangedDocuments(changes, scope, true);
+      if (refreshQuery) this.refreshCurrentQuery();
+    } catch (error) {
+      console.error("[Palimpsest] Could not retry skipped documents", error);
+      if (this.buildCancellation.isPluginActive) new Notice("重试未索引文档失败；原有报告已保留。");
+    } finally {
+      this.flushingFileUpdates = false;
+      this.retryingSkippedDocuments = false;
+    }
   }
 
   /** Removes only the durable data for this vault, then makes queries visibly uninitialized. */
@@ -362,7 +389,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     if (!scope) return;
     try {
       await runIndexReconciliation(
-        this.index.documents,
+        [...this.index.documents, ...this.index.skippedDocuments],
         () => this.app.vault.getMarkdownFiles()
           .filter((file) => !this.isExcluded(file.path, scope))
           .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size })),
@@ -472,6 +499,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const allFiles = this.app.vault.getMarkdownFiles();
     const files = allFiles.filter((file) => !this.isExcluded(file.path, scope));
     const documents: ScannedIndexDocument[] = [];
+    const skippedDocuments: SkippedIndexedDocument[] = [];
     this.preparingIndex = true;
     const buildToken = this.buildCancellation.startBuild();
     this.queryGate.invalidate();
@@ -484,7 +512,11 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
           documents.push(await scanIndexDocument(file, identity, (source) => this.app.vault.cachedRead(source as TFile), () => this.buildCancellation.assertBuildCanContinue(buildToken)));
         } catch (error) {
           if (error instanceof IndexDocumentScanStale) throw new IndexBuildPlanStale("vault");
-          throw error;
+          if (error instanceof IndexDocumentStructureError) {
+            skippedDocuments.push({ ...error.document, reasonCode: error.reasonCode });
+          } else {
+            throw error;
+          }
         }
         this.buildCancellation.assertBuildCanContinue(buildToken);
         this.presentIndexProgress({ phase: "scanning", current: index + 1, total: files.length, label: "正在扫描笔记" });
@@ -499,6 +531,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       return preparePlan({
         totalMarkdownFiles: allFiles.length,
         documents,
+        skippedDocuments,
         reusableById: this.index.reusableById(identity),
         reusableChunks: this.index.chunks,
         vaultRevision,
@@ -544,7 +577,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.presentIndexProgress({ phase: "saving", current: chunkCount, total: chunkCount, label: "正在保存索引" });
       this.committingIndex = true;
       try {
-        await this.commitFullIndex(executed.identity, executed.documents, executed.scope);
+        await this.commitFullIndex(executed.identity, [...executed.documents, ...executed.skippedDocuments], executed.scope);
       } finally {
         this.committingIndex = false;
         this.buildCancellation.finishDurableCommit(buildToken);
@@ -554,7 +587,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.deferredLargeIndexUpdate.clear();
       this.fallbackGenerationInUse = false;
       this.syncQueryAvailability();
-      this.present({ kind: "complete", message: `索引完成：${chunkCount} 个片段` }, this.results);
+      this.present({ kind: "complete", message: `索引完成：${chunkCount} 个片段；${executed.skippedDocuments.length} 篇笔记未索引` }, this.results);
       // Settings may have changed after execution began. In that case the
       // committed plan remains valid but query readiness follows new settings.
       this.indexing = false;
@@ -593,21 +626,22 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   /** Prepares all vault reads and embeddings before one durable patch transaction. */
-  private async commitChangedDocuments(changes: readonly VaultChange[], scope: IndexScope): Promise<boolean> {
+  private async commitChangedDocuments(changes: readonly VaultChange[], scope: IndexScope, skipLargeConfirmation = false): Promise<boolean> {
     this.buildCancellation.assertPluginActive();
     const markdownFiles = this.app.vault.getMarkdownFiles();
     const byPath = new Map(markdownFiles.map((file) => [file.path, file]));
     const plan = planVaultChanges({
       changes,
-      indexedDocumentPaths: this.index.documents.map((document) => document.filePath),
+      indexedDocumentPaths: this.index.documentPaths,
       currentMarkdownPaths: markdownFiles.map((file) => file.path),
       isIncluded: (path) => !this.isExcluded(path, scope)
     });
     const files = plan.upsertPaths.map((path) => byPath.get(path)).filter((file): file is TFile => file !== undefined);
-    const documents = await this.scanIncrementalDocuments(files);
+    const scanned = await this.scanIncrementalDocuments(files);
     const current = { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope };
     const prepared = prepareIncrementalIndexPlan({
-      documents,
+      documents: scanned.documents,
+      skippedDocuments: scanned.skippedDocuments,
       deletes: plan.deletes,
       reusableChunks: this.index.chunks,
       current,
@@ -615,7 +649,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     });
     if (!prepared.summary.documents && !plan.deletes.length) return false;
     const outcome = await runPreparedIncrementalIndexUpdate({
-      needsConfirmation: isLargeIncrementalIndexPlan(prepared.summary),
+      needsConfirmation: !skipLargeConfirmation && isLargeIncrementalIndexPlan(prepared.summary),
       confirm: () => confirmLargeIncrementalIndexUpdate(this.app, prepared.summary),
       execute: () => executeIncrementalIndexPlan(prepared, {
         current: { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.index.scope ?? scope },
@@ -656,7 +690,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private incrementalChangeSummary(changes: readonly VaultChange[], upserts: readonly string[], deletes: readonly string[]): IncrementalChangeSummary {
-    const indexed = new Set(this.index.documents.map((document) => document.filePath));
+    const indexed = new Set(this.index.documentPaths);
     const renamePaths = new Set<string>();
     for (const change of changes) {
       if (change.kind !== "rename") continue;
@@ -671,36 +705,44 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     return { added, renamed, modified: upserts.length - added - renamed, deleted: deletes.length };
   }
 
-  private async scanIncrementalDocuments(files: readonly TFile[]): Promise<ScannedIndexDocument[]> {
+  private async scanIncrementalDocuments(files: readonly TFile[]): Promise<{ documents: ScannedIndexDocument[]; skippedDocuments: SkippedIndexedDocument[] }> {
     const documents: ScannedIndexDocument[] = [];
+    const skippedDocuments: SkippedIndexedDocument[] = [];
     const identity = this.indexIdentity();
     for (let index = 0; index < files.length; index++) {
-      documents.push(await scanIndexDocument(files[index], identity, (file) => this.app.vault.cachedRead(file as TFile), () => this.buildCancellation.assertPluginActive()));
+      try {
+        documents.push(await scanIndexDocument(files[index], identity, (file) => this.app.vault.cachedRead(file as TFile), () => this.buildCancellation.assertPluginActive()));
+      } catch (error) {
+        if (error instanceof IndexDocumentStructureError) skippedDocuments.push({ ...error.document, reasonCode: error.reasonCode });
+        else throw error;
+      }
       if (index % 8 === 7) {
         await this.yieldToUi();
         this.buildCancellation.assertPluginActive();
       }
     }
-    return documents;
+    return { documents, skippedDocuments };
   }
 
   private presentIndexProgress(progress: IndexProgress): void {
     this.present({ kind: "indexing", message: progress.label, progress }, this.results);
   }
 
-  private async commitFullIndex(identity: IndexIdentity, documents: readonly (Omit<ScannedIndexDocument, "chunks"> & { chunks: IndexedChunk[] })[], scope: IndexScope): Promise<void> {
+  private async commitFullIndex(identity: IndexIdentity, documents: readonly (Omit<ScannedIndexDocument, "chunks"> & { chunks: IndexedChunk[] } | SkippedIndexedDocument)[], scope: IndexScope): Promise<void> {
     this.buildCancellation.assertPluginActive();
     const durable = await this.requireIndexStore().commit({
       kind: "replace-all",
       identity,
       scope,
-      documents: documents.map((document) => ({
-        filePath: document.filePath,
-        fileName: document.fileName,
-        sourceMtime: document.sourceMtime,
-        sourceSize: document.sourceSize,
-        chunks: document.chunks.map((chunk) => ({ ...chunk, embeddingInputHash: embeddingInputHash(chunk) }))
-      }))
+      documents: documents.map((document): IndexDocument => "reasonCode" in document
+        ? { ...document }
+        : {
+            filePath: document.filePath,
+            fileName: document.fileName,
+            sourceMtime: document.sourceMtime,
+            sourceSize: document.sourceSize,
+            chunks: document.chunks.map((chunk) => ({ ...chunk, embeddingInputHash: embeddingInputHash(chunk) }))
+          })
     });
     this.buildCancellation.assertPluginActive();
     this.index.commit(durable);

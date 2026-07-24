@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { IndexDocumentScanStale, IndexScannableFile, scanIndexDocument } from "../src/index-document-scan";
+import { IndexDocumentScanStale, IndexDocumentStructureError, IndexScannableFile, scanIndexDocument, validateScannedDocumentChunks } from "../src/index-document-scan";
 import { CHUNKER_VERSION, IndexIdentity } from "../src/types";
 
 const identity: IndexIdentity = {
@@ -70,4 +70,27 @@ test("a stale document aborts a multi-document scan before a patch candidate exi
   }, () => undefined), IndexDocumentScanStale);
   // Callers receive no completed batch to hand to prepare/commit.
   assert.equal(first.filePath, "note.md");
+});
+
+test("skipped Markdown heading levels still produce storage-valid breadcrumbs", async () => {
+  const scanned = await scanIndexDocument(file(), identity, async () => "## 看板\n\n卡片内容", () => undefined);
+  assert.deepEqual(scanned.chunks[0].breadcrumb, ["看板"]);
+  assert.ok(scanned.chunks[0].breadcrumb.every((heading) => typeof heading === "string"));
+});
+
+test("arbitrary heading jumps retain only defined ancestor breadcrumbs", async () => {
+  const scanned = await scanIndexDocument(file(), identity, async () => "# 总览\n\n总览内容\n\n### 深层\n\n深层内容\n\n## 同级父层\n\n父层内容", () => undefined);
+  assert.deepEqual(scanned.chunks.map((chunk) => chunk.breadcrumb), [["总览"], ["总览", "深层"], ["总览", "同级父层"]]);
+  assert.ok(scanned.chunks.flatMap((chunk) => chunk.breadcrumb).every((heading) => typeof heading === "string"));
+});
+
+test("chunk storage preflight produces a safe file-local error before embedding can begin", () => {
+  assert.throws(() => validateScannedDocumentChunks({
+    filePath: "bad.md",
+    fileName: "bad",
+    sourceMtime: 1,
+    sourceSize: 1,
+    chunks: [{ id: "bad", contentHash: "bad", filePath: "other.md", fileName: "bad", breadcrumb: [], text: "body", startLine: 1, endLine: 1 }]
+  }), (error: unknown) => error instanceof IndexDocumentStructureError &&
+    error.reasonCode === "invalid-chunk-structure" && error.document.filePath === "bad.md");
 });

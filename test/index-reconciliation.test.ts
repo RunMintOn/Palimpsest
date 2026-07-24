@@ -42,3 +42,10 @@ test("a rename after a full-build scan is an added new path and a deleted scanne
   assert.deepEqual(plan.added, ["new.md"]);
   assert.deepEqual(plan.deleted, ["old.md"]);
 });
+
+test("unchanged skipped documents are already processed, while changed and deleted ones are reconciled", () => {
+  const skipped = { filePath: "bad.md", fileName: "bad", sourceMtime: 3, sourceSize: 9, reasonCode: "invalid-chunk-structure" as const };
+  assert.deepEqual(planIndexReconciliation([skipped], [{ path: "bad.md", mtime: 3, size: 9 }]).changes, []);
+  assert.deepEqual(planIndexReconciliation([skipped], [{ path: "bad.md", mtime: 4, size: 9 }]).statChanged, ["bad.md"]);
+  assert.deepEqual(planIndexReconciliation([skipped], []).deleted, ["bad.md"]);
+});

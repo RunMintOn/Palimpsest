@@ -2,7 +2,7 @@ import { IndexScope, indexScope, sameIndexScope } from "./index-scope";
 import { ScannedIndexDocument } from "./index-document-scan";
 import { EmbeddingReuseLookup, groupChunksByEmbeddingInput } from "./embedding-reuse";
 import { sameIdentity } from "./persistent-index";
-import { Chunk, IndexIdentity, IndexedChunk, NumericVector } from "./types";
+import { Chunk, IndexIdentity, IndexedChunk, NumericVector, SkippedIndexedDocument } from "./types";
 
 export type { ScannedIndexDocument } from "./index-document-scan";
 
@@ -13,6 +13,7 @@ export interface IndexBuildSummary {
   totalChunks: number;
   reusableChunks: number;
   pendingChunks: number;
+  skippedDocuments: number;
   scope: IndexScope;
   model: string;
   dimensions: number;
@@ -22,6 +23,8 @@ export interface IndexBuildPlanInput {
   totalMarkdownFiles: number;
   /** The sole full-build scan source, including documents with zero chunks. */
   documents: readonly ScannedIndexDocument[];
+  /** Stable file-local failures that must be published without embedding. */
+  skippedDocuments?: readonly SkippedIndexedDocument[];
   reusableById: ReadonlyMap<string, IndexedChunk>;
   /** Complete current index enables path-independent semantic vector reuse. */
   reusableChunks?: readonly IndexedChunk[];
@@ -54,6 +57,7 @@ interface PlannedChunk {
 
 interface PreparedIndexBuildData {
   documents: readonly { document: ScannedIndexDocument; chunks: readonly PlannedChunk[] }[];
+  skippedDocuments: readonly SkippedIndexedDocument[];
   vaultRevision: number;
   identity: IndexIdentity;
   scope: IndexScope;
@@ -87,6 +91,10 @@ function copyDocument(document: ScannedIndexDocument): ScannedIndexDocument {
     sourceSize: document.sourceSize,
     chunks: document.chunks.map(copyChunk)
   };
+}
+
+function copySkippedDocument(document: SkippedIndexedDocument): SkippedIndexedDocument {
+  return { ...document };
 }
 
 function chunkContext(chunk: Chunk): string {
@@ -123,11 +131,12 @@ export class PreparedIndexBuild {
     const scope = copyScope(input.scope);
     this.summary = Object.freeze({
       totalMarkdownFiles: input.totalMarkdownFiles,
-      excludedFiles: input.totalMarkdownFiles - documents.length,
-      includedFiles: documents.length,
+      excludedFiles: input.totalMarkdownFiles - documents.length - (input.skippedDocuments?.length ?? 0),
+      includedFiles: documents.length + (input.skippedDocuments?.length ?? 0),
       totalChunks: documents.reduce((total, document) => total + document.chunks.length, 0),
       reusableChunks,
       pendingChunks: documents.reduce((total, document) => total + document.chunks.length, 0) - reusableChunks,
+      skippedDocuments: input.skippedDocuments?.length ?? 0,
       scope: Object.freeze({ excludedDirectories: Object.freeze([...scope.excludedDirectories]) as unknown as string[] }),
       model: input.identity.model,
       dimensions: input.identity.dimensions
@@ -140,6 +149,7 @@ export class PreparedIndexBuild {
           reusableVector: item.reusableVector
         })))
       }))),
+      skippedDocuments: Object.freeze((input.skippedDocuments ?? []).map(copySkippedDocument)),
       vaultRevision: input.vaultRevision,
       identity: copyIdentity(input.identity),
       scope
@@ -149,10 +159,16 @@ export class PreparedIndexBuild {
 
 /** Creates a plan after scanning, before any document embedding is requested. */
 export function prepareIndexBuild(input: IndexBuildPlanInput): PreparedIndexBuild {
-  if (!Number.isInteger(input.totalMarkdownFiles) || input.totalMarkdownFiles < input.documents.length) {
+  const skippedDocuments = input.skippedDocuments ?? [];
+  if (!Number.isInteger(input.totalMarkdownFiles) || input.totalMarkdownFiles < input.documents.length + skippedDocuments.length) {
     throw new Error("Full-build totalMarkdownFiles must include every scanned document");
   }
   const scannedDocuments = input.documents;
+  const paths = new Set<string>();
+  for (const document of [...scannedDocuments, ...skippedDocuments]) {
+    if (paths.has(document.filePath)) throw new Error(`Duplicate scanned document path: ${document.filePath}`);
+    paths.add(document.filePath);
+  }
   const scannedChunks = scannedDocuments.flatMap((document) => document.chunks);
   const seen = new Map<string, Chunk>();
   for (const chunk of scannedChunks) {
@@ -171,7 +187,7 @@ export function prepareIndexBuild(input: IndexBuildPlanInput): PreparedIndexBuil
     });
     return { document: copyDocument(document), chunks };
   });
-  const plan = new PreparedIndexBuild(input, documents, reusableChunks);
+  const plan = new PreparedIndexBuild({ ...input, skippedDocuments }, documents, reusableChunks);
   if (input.currentState) assertIndexBuildPlanCurrent(plan, input.currentState());
   return plan;
 }
@@ -197,6 +213,7 @@ export interface ExecutedIndexBuild {
   scope: IndexScope;
   vaultRevision: number;
   documents: Array<Omit<ScannedIndexDocument, "chunks"> & { chunks: IndexedChunk[] }>;
+  skippedDocuments: SkippedIndexedDocument[];
 }
 
 /** Validates freshness, embeds only pending chunks, and restores scan order. */
@@ -233,6 +250,7 @@ export async function executePreparedIndexBuild(plan: PreparedIndexBuild, option
         ...chunk,
         vector: reusableVector ?? embeddedVectors.get(chunk.id)!
       }))
-    }))
+    })),
+    skippedDocuments: data.skippedDocuments.map(copySkippedDocument)
   };
 }

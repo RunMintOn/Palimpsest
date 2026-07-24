@@ -1,4 +1,4 @@
-import { IndexedDocumentMetadata } from "./types";
+import { IndexedDocumentMetadata, SkippedIndexedDocument } from "./types";
 import { VaultChange } from "./vault-change-plan";
 
 /** The only file facts needed to decide whether an indexed document may be stale. */
@@ -20,7 +20,7 @@ export interface IndexReconciliationPlan {
  * content reader: callers must not read every Markdown body at startup.
  */
 export function planIndexReconciliation(
-  indexedDocuments: readonly IndexedDocumentMetadata[],
+  indexedDocuments: readonly (IndexedDocumentMetadata | SkippedIndexedDocument)[],
   currentFiles: readonly ReconciliationFile[]
 ): IndexReconciliationPlan {
   const indexed = new Map(indexedDocuments.map((document) => [document.filePath, document]));
@@ -44,7 +44,7 @@ export function planIndexReconciliation(
 
 /** Runs a plan without exposing a content-read operation or submitting an empty patch. */
 export async function runIndexReconciliation(
-  indexedDocuments: readonly IndexedDocumentMetadata[],
+  indexedDocuments: readonly (IndexedDocumentMetadata | SkippedIndexedDocument)[],
   listCurrentFiles: () => readonly ReconciliationFile[],
   submitChanges: (changes: readonly VaultChange[]) => Promise<void> | void
 ): Promise<IndexReconciliationPlan> {

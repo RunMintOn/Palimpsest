@@ -1,5 +1,5 @@
 import { IndexScope, indexScope, sameIndexScope } from "./index-scope";
-import { IndexIdentity, IndexedChunk, NumericVector, PersistentIndexData } from "./types";
+import { IndexIdentity, IndexedChunk, NumericVector, PersistentIndexData, SkippedDocumentReasonCode, SkippedIndexedDocument } from "./types";
 
 const DATABASE_NAME = "palimpsest-index-v1";
 const DATABASE_VERSION = 1;
@@ -13,6 +13,8 @@ interface StoredIndexedChunk extends Omit<IndexedChunk, "vector"> {
 }
 
 interface StoredIndexedDocument {
+  /** Absent in v1 records; those are read as indexed for compatibility. */
+  kind?: "indexed";
   vaultId: string;
   generation: string;
   filePath: string;
@@ -21,6 +23,19 @@ interface StoredIndexedDocument {
   sourceSize: number;
   chunks: StoredIndexedChunk[];
 }
+
+interface StoredSkippedDocument {
+  kind: "skipped";
+  vaultId: string;
+  generation: string;
+  filePath: string;
+  fileName: string;
+  sourceMtime: number;
+  sourceSize: number;
+  reasonCode: SkippedDocumentReasonCode;
+}
+
+type StoredDocument = StoredIndexedDocument | StoredSkippedDocument;
 
 interface GenerationSnapshot {
   generation: string;
@@ -50,17 +65,20 @@ export interface IndexedDocument {
   chunks: Array<IndexedChunk & { embeddingInputHash: string }>;
 }
 
+/** The storage boundary makes indexed and skipped documents explicit variants. */
+export type IndexDocument = IndexedDocument | SkippedIndexedDocument;
+
 export type IndexCommit =
   | {
       kind: "replace-all";
       identity: IndexIdentity;
       scope: IndexScope;
-      documents: readonly IndexedDocument[];
+      documents: readonly IndexDocument[];
     }
   | {
       kind: "patch-documents";
       identity: IndexIdentity;
-      upserts: readonly IndexedDocument[];
+      upserts: readonly IndexDocument[];
       deletes: readonly string[];
     };
 
@@ -219,7 +237,7 @@ class IndexedDbIndexStore implements IndexStore {
       if (!sameIdentity(metadata.identity, identity)) throw new Error("Patch identity does not match the current index");
 
       const documentsStore = transaction.objectStore(DOCUMENTS_STORE);
-      const existing = await requestResult(documentsStore.getAll(generationRange(this.vaultId, metadata.currentGeneration))) as StoredIndexedDocument[];
+      const existing = await requestResult(documentsStore.getAll(generationRange(this.vaultId, metadata.currentGeneration))) as StoredDocument[];
       const currentSnapshotData = currentSnapshot(metadata);
       if (!validateGenerationDocuments(existing, this.vaultId, currentSnapshotData)) throw new Error("Cannot patch an invalid current generation");
 
@@ -274,7 +292,7 @@ class IndexedDbIndexStore implements IndexStore {
       const done = transactionDone(transaction);
       const store = transaction.objectStore(DOCUMENTS_STORE);
       await visitDocuments(store, generationRange(this.vaultId), (cursor) => {
-        const document = cursor.value as StoredIndexedDocument;
+        const document = cursor.value as StoredDocument;
         if (!keep.includes(document.generation)) cursor.delete();
       });
       await done;
@@ -360,33 +378,57 @@ function validateScope(scope: IndexScope): IndexScope {
   return { excludedDirectories: [...normalized.excludedDirectories] };
 }
 
-function normalizeDocuments(documents: readonly IndexedDocument[], identity: IndexIdentity): StoredIndexedDocument[] {
+function normalizeDocuments(documents: readonly IndexDocument[], identity: IndexIdentity): StoredDocument[] {
   if (!Array.isArray(documents)) throw new Error("Documents must be an array");
   const normalized = documents.map((document) => normalizeDocument(document, identity));
   validateGlobalDocumentInvariants(normalized, identity);
   return normalized;
 }
 
-function normalizeDocument(document: IndexedDocument, identity: IndexIdentity): StoredIndexedDocument {
+function normalizeDocument(document: IndexDocument, identity: IndexIdentity): StoredDocument {
+  if (isSkippedDocument(document)) return normalizeSkippedDocument(document);
   if (!document || !isNonEmptyString(document.filePath) || !isNonEmptyString(document.fileName) ||
     !isNonNegativeFinite(document.sourceMtime) || !isNonNegativeFinite(document.sourceSize) || !Array.isArray(document.chunks)) {
     throw new Error("Invalid indexed document");
   }
   return {
+    kind: "indexed",
     vaultId: "", // Filled exactly once by the store, never accepted from a caller.
     generation: "",
     filePath: document.filePath,
     fileName: document.fileName,
     sourceMtime: document.sourceMtime,
     sourceSize: document.sourceSize,
-    chunks: document.chunks.map((chunk) => normalizeChunk(chunk, document.filePath, identity))
+    chunks: document.chunks.map((chunk) => normalizeChunk(chunk, document.filePath, document.fileName, identity))
   };
 }
 
-function normalizeChunk(chunk: IndexedChunk & { embeddingInputHash: string }, documentPath: string, identity: IndexIdentity): StoredIndexedChunk {
+function isSkippedDocument(document: IndexDocument | StoredDocument): document is SkippedIndexedDocument | StoredSkippedDocument {
+  return "reasonCode" in document;
+}
+
+function normalizeSkippedDocument(document: SkippedIndexedDocument): StoredSkippedDocument {
+  if (!document || !isNonEmptyString(document.filePath) || !isNonEmptyString(document.fileName) ||
+    !isNonNegativeFinite(document.sourceMtime) || !isNonNegativeFinite(document.sourceSize) ||
+    document.reasonCode !== "invalid-chunk-structure") {
+    throw new Error("Invalid skipped document");
+  }
+  return {
+    kind: "skipped",
+    vaultId: "",
+    generation: "",
+    filePath: document.filePath,
+    fileName: document.fileName,
+    sourceMtime: document.sourceMtime,
+    sourceSize: document.sourceSize,
+    reasonCode: document.reasonCode
+  };
+}
+
+function normalizeChunk(chunk: IndexedChunk & { embeddingInputHash: string }, documentPath: string, documentName: string, identity: IndexIdentity): StoredIndexedChunk {
   if (!chunk || !isNonEmptyString(chunk.id) || !isNonEmptyString(chunk.contentHash) || !isNonEmptyString(chunk.embeddingInputHash) ||
-    chunk.filePath !== documentPath || !isNonEmptyString(chunk.fileName) || !Array.isArray(chunk.breadcrumb) ||
-    chunk.breadcrumb.some((heading) => typeof heading !== "string") || typeof chunk.text !== "string" ||
+    chunk.filePath !== documentPath || chunk.fileName !== documentName || !isNonEmptyString(chunk.fileName) || !Array.isArray(chunk.breadcrumb) ||
+    chunk.breadcrumb.some((heading) => !isNonEmptyString(heading)) || !isNonEmptyString(chunk.text) ||
     !isPositiveInteger(chunk.startLine) || !isPositiveInteger(chunk.endLine) || chunk.endLine < chunk.startLine) {
     throw new Error(`Invalid chunk in ${documentPath}`);
   }
@@ -418,12 +460,13 @@ function normalizeVector(vector: NumericVector, dimensions: number, chunkId: str
   return normalized;
 }
 
-function validateGlobalDocumentInvariants(documents: readonly StoredIndexedDocument[], identity: IndexIdentity): void {
+function validateGlobalDocumentInvariants(documents: readonly StoredDocument[], identity: IndexIdentity): void {
   const paths = new Set<string>();
   const chunkIds = new Set<string>();
   for (const document of documents) {
     if (paths.has(document.filePath)) throw new Error(`Duplicate document path: ${document.filePath}`);
     paths.add(document.filePath);
+    if (isSkippedDocument(document)) continue;
     for (const chunk of document.chunks) {
       if (chunk.filePath !== document.filePath) throw new Error(`Chunk ${chunk.id} belongs to ${chunk.filePath}, not ${document.filePath}`);
       if (chunkIds.has(chunk.id)) throw new Error(`Duplicate chunk ID: ${chunk.id}`);
@@ -433,7 +476,7 @@ function validateGlobalDocumentInvariants(documents: readonly StoredIndexedDocum
   }
 }
 
-function validateDeletes(deletes: readonly string[], upserts: readonly StoredIndexedDocument[]): void {
+function validateDeletes(deletes: readonly string[], upserts: readonly StoredDocument[]): void {
   const paths = new Set<string>();
   const upsertPaths = new Set(upserts.map((document) => document.filePath));
   for (const path of deletes) {
@@ -459,7 +502,7 @@ async function writeMetadata(database: IDBDatabase, metadata: StoredIndexMetadat
   await done;
 }
 
-async function writeDocuments(database: IDBDatabase, documents: readonly StoredIndexedDocument[]): Promise<void> {
+async function writeDocuments(database: IDBDatabase, documents: readonly StoredDocument[]): Promise<void> {
   const transaction = database.transaction(DOCUMENTS_STORE, "readwrite");
   const done = transactionDone(transaction);
   const store = transaction.objectStore(DOCUMENTS_STORE);
@@ -469,10 +512,10 @@ async function writeDocuments(database: IDBDatabase, documents: readonly StoredI
   await done;
 }
 
-async function getDocuments(database: IDBDatabase, vaultId: string, generation: string): Promise<StoredIndexedDocument[]> {
+async function getDocuments(database: IDBDatabase, vaultId: string, generation: string): Promise<StoredDocument[]> {
   const transaction = database.transaction(DOCUMENTS_STORE, "readonly");
   const done = transactionDone(transaction);
-  const documents = await requestResult(transaction.objectStore(DOCUMENTS_STORE).getAll(generationRange(vaultId, generation))) as StoredIndexedDocument[];
+  const documents = await requestResult(transaction.objectStore(DOCUMENTS_STORE).getAll(generationRange(vaultId, generation))) as StoredDocument[];
   await done;
   return documents;
 }
@@ -483,12 +526,12 @@ async function readGeneration(database: IDBDatabase, vaultId: string, snapshot: 
   return persistentData(snapshot, documents);
 }
 
-function validateGenerationDocuments(documents: readonly StoredIndexedDocument[], vaultId: string, snapshot: GenerationSnapshot): boolean {
+function validateGenerationDocuments(documents: readonly StoredDocument[], vaultId: string, snapshot: GenerationSnapshot): boolean {
   try {
     if (documents.length !== snapshot.documentCount || countChunks(documents) !== snapshot.chunkCount) return false;
     for (const document of documents) {
       if (document.vaultId !== vaultId || document.generation !== snapshot.generation) return false;
-      if (document.chunks.some((chunk) => !(chunk.vector instanceof Float32Array))) return false;
+      if (!isSkippedDocument(document) && document.chunks.some((chunk) => !(chunk.vector instanceof Float32Array))) return false;
       normalizeDocument(document, snapshot.identity);
     }
     validateGlobalDocumentInvariants(documents, snapshot.identity);
@@ -498,12 +541,12 @@ function validateGenerationDocuments(documents: readonly StoredIndexedDocument[]
   }
 }
 
-function persistentData(metadata: GenerationSnapshot, documents: readonly StoredIndexedDocument[]): PersistentIndexData {
+function persistentData(metadata: GenerationSnapshot, documents: readonly StoredDocument[]): PersistentIndexData {
   return {
     schemaVersion: 3,
     identity: { ...metadata.identity },
     scope: { excludedDirectories: [...metadata.scope.excludedDirectories] },
-    chunks: documents.flatMap((document) => document.chunks.map((chunk) => ({
+    chunks: documents.filter((document): document is StoredIndexedDocument => !isSkippedDocument(document)).flatMap((document) => document.chunks.map((chunk) => ({
       id: chunk.id,
       contentHash: chunk.contentHash,
       filePath: chunk.filePath,
@@ -514,11 +557,18 @@ function persistentData(metadata: GenerationSnapshot, documents: readonly Stored
       endLine: chunk.endLine,
       vector: chunk.vector
     }))),
-    documents: documents.map((document) => ({
+    documents: documents.filter((document): document is StoredIndexedDocument => !isSkippedDocument(document)).map((document) => ({
       filePath: document.filePath,
       fileName: document.fileName,
       sourceMtime: document.sourceMtime,
       sourceSize: document.sourceSize
+    })),
+    skippedDocuments: documents.filter((document): document is StoredSkippedDocument => isSkippedDocument(document)).map((document) => ({
+      filePath: document.filePath,
+      fileName: document.fileName,
+      sourceMtime: document.sourceMtime,
+      sourceSize: document.sourceSize,
+      reasonCode: document.reasonCode
     })),
     updatedAt: metadata.updatedAt,
     initialized: true
@@ -563,8 +613,8 @@ function generationRange(vaultId: string, generation?: string): IDBKeyRange {
     : IDBKeyRange.bound([vaultId, generation, ""], [vaultId, generation, "\uffff"]);
 }
 
-function countChunks(documents: readonly { chunks: readonly unknown[] }[]): number {
-  return documents.reduce((count, document) => count + document.chunks.length, 0);
+function countChunks(documents: readonly StoredDocument[]): number {
+  return documents.reduce((count, document) => count + (isSkippedDocument(document) ? 0 : document.chunks.length), 0);
 }
 
 function visitDocuments(store: IDBObjectStore, range: IDBKeyRange, visit: (cursor: IDBCursorWithValue) => void): Promise<void> {

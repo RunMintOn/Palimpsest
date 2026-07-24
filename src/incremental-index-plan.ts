@@ -1,9 +1,9 @@
 import { embeddingInputHash, EmbeddingReuseLookup, groupChunksByEmbeddingInput } from "./embedding-reuse";
 import { ScannedIndexDocument } from "./index-document-scan";
-import { IndexedDocument } from "./index-store";
+import { IndexDocument } from "./index-store";
 import { IndexScope, sameIndexScope } from "./index-scope";
 import { sameIdentity } from "./persistent-index";
-import { Chunk, IndexIdentity, IndexedChunk, NumericVector } from "./types";
+import { Chunk, IndexIdentity, IndexedChunk, NumericVector, SkippedIndexedDocument } from "./types";
 
 export const LARGE_INCREMENTAL_DOCUMENT_THRESHOLD = 50;
 export const LARGE_INCREMENTAL_CHUNK_THRESHOLD = 500;
@@ -33,6 +33,7 @@ export interface IncrementalIndexPlanState {
 
 export interface PrepareIncrementalIndexPlanInput {
   documents: readonly IncrementalScannedDocument[];
+  skippedDocuments?: readonly SkippedIndexedDocument[];
   deletes: readonly string[];
   reusableChunks: readonly IndexedChunk[];
   current: IncrementalIndexPlanState;
@@ -46,6 +47,7 @@ interface PlannedChunk {
 
 interface PlanData {
   documents: readonly { document: IncrementalScannedDocument; chunks: readonly PlannedChunk[] }[];
+  skippedDocuments: readonly SkippedIndexedDocument[];
   deletes: readonly string[];
   current: IncrementalIndexPlanState;
 }
@@ -58,7 +60,7 @@ export class PreparedIncrementalIndexPlan {
 
   constructor(input: PrepareIncrementalIndexPlanInput, documents: PlanData["documents"], reusableChunks: number, pendingChunks: number, pendingDocuments: number) {
     this.summary = Object.freeze({
-      documents: input.documents.length,
+      documents: input.documents.length + (input.skippedDocuments?.length ?? 0),
       reusableChunks,
       pendingChunks,
       pendingDocuments,
@@ -66,6 +68,7 @@ export class PreparedIncrementalIndexPlan {
     });
     planData.set(this, {
       documents,
+      skippedDocuments: Object.freeze((input.skippedDocuments ?? []).map((document) => ({ ...document }))),
       deletes: Object.freeze([...input.deletes]),
       current: copyState(input.current)
     });
@@ -105,7 +108,13 @@ export function prepareIncrementalIndexPlan(input: PrepareIncrementalIndexPlanIn
     if (documentHasPending) pendingDocuments++;
     return { document: { ...document, chunks: document.chunks.map((chunk) => ({ ...chunk, breadcrumb: [...chunk.breadcrumb] })) }, chunks };
   });
-  return new PreparedIncrementalIndexPlan(input, documents, reusableChunks, pendingChunks, pendingDocuments);
+  const skippedDocuments = input.skippedDocuments ?? [];
+  const paths = new Set<string>();
+  for (const document of [...input.documents, ...skippedDocuments]) {
+    if (paths.has(document.filePath)) throw new Error(`Duplicate scanned document path: ${document.filePath}`);
+    paths.add(document.filePath);
+  }
+  return new PreparedIncrementalIndexPlan({ ...input, skippedDocuments }, documents, reusableChunks, pendingChunks, pendingDocuments);
 }
 
 export function isLargeIncrementalIndexPlan(summary: IncrementalIndexSummary): boolean {
@@ -130,7 +139,7 @@ export interface ExecuteIncrementalIndexPlanOptions {
 }
 
 export interface ExecutedIncrementalIndexPlan {
-  upserts: IndexedDocument[];
+  upserts: IndexDocument[];
   deletes: readonly string[];
 }
 
@@ -161,12 +170,15 @@ export async function executeIncrementalIndexPlan(
   assertIncrementalIndexPlanCurrent(plan, options.current);
   return {
     deletes: data.deletes,
-    upserts: data.documents.map(({ document, chunks }) => ({
-      filePath: document.filePath,
-      fileName: document.fileName,
-      sourceMtime: document.sourceMtime,
-      sourceSize: document.sourceSize,
-      chunks: chunks.map(({ chunk }) => ({ ...chunk, vector: vectors.get(chunk.id)!, embeddingInputHash: embeddingInputHash(chunk) }))
-    }))
+    upserts: [
+      ...data.documents.map(({ document, chunks }) => ({
+        filePath: document.filePath,
+        fileName: document.fileName,
+        sourceMtime: document.sourceMtime,
+        sourceSize: document.sourceSize,
+        chunks: chunks.map(({ chunk }) => ({ ...chunk, vector: vectors.get(chunk.id)!, embeddingInputHash: embeddingInputHash(chunk) }))
+      })),
+      ...data.skippedDocuments.map((document) => ({ ...document }))
+    ]
   };
 }

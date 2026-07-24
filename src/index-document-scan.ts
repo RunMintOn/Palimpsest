@@ -1,5 +1,5 @@
 import { chunkMarkdown } from "./chunker";
-import { Chunk, IndexIdentity } from "./types";
+import { Chunk, IndexIdentity, SkippedDocumentReasonCode } from "./types";
 
 /** The file facts and chunks observed during one stable cached-read window. */
 export interface ScannedIndexDocument {
@@ -22,6 +22,38 @@ export class IndexDocumentScanStale extends Error {
   constructor() {
     super("Index document changed while it was being scanned");
     this.name = "IndexDocumentScanStale";
+  }
+}
+
+/** A safe, file-local scan result failure that may be persisted as skipped. */
+export class IndexDocumentStructureError extends Error {
+  readonly reasonCode: SkippedDocumentReasonCode = "invalid-chunk-structure";
+
+  constructor(readonly document: Omit<ScannedIndexDocument, "chunks">) {
+    super("Document chunks cannot be stored safely");
+    this.name = "IndexDocumentStructureError";
+  }
+}
+
+/**
+ * This preflight intentionally runs before any embedding request. IndexStore
+ * repeats it defensively, but normal malformed chunk candidates are caught
+ * while their stable source-file snapshot is still available.
+ */
+export function validateScannedDocumentChunks(document: ScannedIndexDocument): void {
+  for (const chunk of document.chunks) {
+    if (!chunk || typeof chunk.id !== "string" || !chunk.id || typeof chunk.contentHash !== "string" || !chunk.contentHash ||
+      chunk.filePath !== document.filePath || chunk.fileName !== document.fileName || typeof chunk.fileName !== "string" || !chunk.fileName ||
+      !Array.isArray(chunk.breadcrumb) || chunk.breadcrumb.some((heading) => typeof heading !== "string" || !heading) ||
+      typeof chunk.text !== "string" || !chunk.text || !Number.isInteger(chunk.startLine) || chunk.startLine < 1 ||
+      !Number.isInteger(chunk.endLine) || chunk.endLine < chunk.startLine) {
+      throw new IndexDocumentStructureError({
+        filePath: document.filePath,
+        fileName: document.fileName,
+        sourceMtime: document.sourceMtime,
+        sourceSize: document.sourceSize
+      });
+    }
   }
 }
 
@@ -55,5 +87,7 @@ export async function scanIndexDocument(
     minLength: identity.chunkMinLength
   });
   assertCanContinue();
-  return { ...snapshot, chunks };
+  const document = { ...snapshot, chunks };
+  validateScannedDocumentChunks(document);
+  return document;
 }

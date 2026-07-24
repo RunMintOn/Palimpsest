@@ -84,3 +84,25 @@ test("unload seam stops an incremental plan after embedding before it can produc
     yieldToUi: async () => undefined
   }), /unloaded/);
 });
+
+test("an incremental retry embeds only successful rescans and patches a skipped document back to indexed", async () => {
+  const skipped = { filePath: "bad.md", fileName: "bad", sourceMtime: 1, sourceSize: 3, reasonCode: "invalid-chunk-structure" as const };
+  const plan = prepareIncrementalIndexPlan({
+    documents: [document("fixed.md")],
+    skippedDocuments: [skipped],
+    deletes: [],
+    reusableChunks: [],
+    current,
+    changes: { added: 0, renamed: 0, modified: 2, deleted: 0 }
+  });
+  let embedded = 0;
+  const executed = await executeIncrementalIndexPlan(plan, {
+    current, batchSize: 1,
+    embedDocuments: async (chunks) => { embedded += chunks.length; return [new Float32Array([1, 2, 3])]; },
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.equal(embedded, 1);
+  assert.deepEqual(executed.upserts.map((item) => item.filePath), ["fixed.md", "bad.md"]);
+  assert.equal("reasonCode" in executed.upserts[1], true);
+});

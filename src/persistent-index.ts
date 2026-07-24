@@ -1,5 +1,5 @@
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus } from "./index-scope";
-import { IndexIdentity, IndexedChunk, IndexedDocumentMetadata, IndexLifecycle, PersistentIndexData } from "./types";
+import { IndexIdentity, IndexedChunk, IndexedDocumentMetadata, IndexLifecycle, PersistentIndexData, SkippedIndexedDocument } from "./types";
 
 const CURRENT_SCHEMA_VERSION = 3;
 
@@ -20,6 +20,10 @@ function copyDocuments(documents: readonly IndexedDocumentMetadata[] | undefined
   return documents?.map((document) => ({ ...document }));
 }
 
+function copySkippedDocuments(documents: readonly SkippedIndexedDocument[] | undefined): SkippedIndexedDocument[] | undefined {
+  return documents?.map((document) => ({ ...document }));
+}
+
 export class PersistentIndex {
   private data: PersistentIndexData;
 
@@ -36,7 +40,7 @@ export class PersistentIndex {
       const scope = initialized
         ? indexScope(saved.scope?.excludedDirectories ?? legacySettingsScope.excludedDirectories)
         : undefined;
-      this.data = { ...saved, documents: copyDocuments(saved.documents), schemaVersion: CURRENT_SCHEMA_VERSION, initialized, scope };
+      this.data = { ...saved, documents: copyDocuments(saved.documents), skippedDocuments: copySkippedDocuments(saved.skippedDocuments), schemaVersion: CURRENT_SCHEMA_VERSION, initialized, scope };
     } else {
       this.data = { schemaVersion: CURRENT_SCHEMA_VERSION, identity, chunks: [], updatedAt: 0, initialized: false };
     }
@@ -52,6 +56,12 @@ export class PersistentIndex {
 
   /** Includes indexed Markdown files that produced zero chunks. */
   get documents(): readonly IndexedDocumentMetadata[] { return copyDocuments(this.data.documents) ?? []; }
+
+  /** Skipped documents are processed state, not empty indexed documents. */
+  get skippedDocuments(): readonly SkippedIndexedDocument[] { return copySkippedDocuments(this.data.skippedDocuments) ?? []; }
+
+  /** Every path known to the current generation, for reconciliation and patches. */
+  get documentPaths(): readonly string[] { return [...this.documents, ...this.skippedDocuments].map((document) => document.filePath); }
 
   /** A copy prevents callers from changing the persisted effective scope. */
   get scope(): IndexScope | undefined {
@@ -111,6 +121,7 @@ export class PersistentIndex {
     this.data = {
       ...data,
       documents: copyDocuments(data.documents),
+      skippedDocuments: copySkippedDocuments(data.skippedDocuments),
       schemaVersion: CURRENT_SCHEMA_VERSION,
       initialized,
       scope: initialized
@@ -120,6 +131,6 @@ export class PersistentIndex {
   }
 
   serialize(): PersistentIndexData {
-    return { ...this.data, scope: this.scope, documents: copyDocuments(this.data.documents) };
+    return { ...this.data, scope: this.scope, documents: copyDocuments(this.data.documents), skippedDocuments: copySkippedDocuments(this.data.skippedDocuments) };
   }
 }

@@ -133,6 +133,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
   private indexPage(): void {
     this.indexScopeSettings();
     this.localIndexStorageSettings();
+    this.skippedDocumentSettings();
     this.heading("索引构建", "indexBuild");
     this.fullIndexBuildSetting();
     this.number("建库批量大小", "每次 Ollama 文档 embedding 数", "embeddingBatchSize", 1);
@@ -170,6 +171,33 @@ export class SideGrepSettingTab extends PluginSettingTab {
             this.display();
           }
         }));
+  }
+
+  /** Persistent, safe per-file report; this is not a transient completion notice. */
+  private skippedDocumentSettings(): void {
+    this.heading("未索引文档");
+    const report = this.plugin.getSkippedDocumentReport();
+    new Setting(this.containerEl)
+      .setName(`未索引文档：${report.documents.length} 篇`)
+      .setDesc(report.documents.length ? "这些笔记在稳定扫描时无法生成可保存的片段；修改后会自动重试。" : "当前没有未索引文档。");
+    for (const document of report.documents) {
+      new Setting(this.containerEl)
+        .setName(document.filePath)
+        .setDesc(skippedDocumentReason(document.reasonCode));
+    }
+    if (report.documents.length) {
+      new Setting(this.containerEl)
+        .setName("重试全部未索引文档")
+        .setDesc("只重新扫描并索引以上文档；不会全量重建。")
+        .addButton((button) => button
+          .setButtonText(report.retrying ? "正在重试…" : "重试所有未索引文档")
+          .setDisabled(report.retrying)
+          .onClick(async () => {
+            button.setDisabled(true);
+            await this.plugin.retrySkippedDocuments();
+            this.display();
+          }));
+    }
   }
 
   private embeddingPage(): void {
@@ -437,4 +465,9 @@ export class SideGrepSettingTab extends PluginSettingTab {
     await this.plugin.saveSettings();
     this.plugin.onSettingsChanged();
   }
+}
+
+function skippedDocumentReason(reasonCode: string): string {
+  if (reasonCode === "invalid-chunk-structure") return "片段结构无效，未发送给 Ollama。";
+  return "无法建立索引。";
 }

@@ -83,12 +83,15 @@ export function chunkMarkdown(filePath: string, markdown: string, options: Chunk
   }
   const filename = filePath.split("/").pop()?.replace(/\.md$/i, "") ?? filePath;
   const source = withoutFrontmatter(markdown.replace(/\r\n/g, "\n").split("\n"));
-  const headings: string[] = [];
+  // Keep actual heading depths separate from the breadcrumb display values.
+  // Markdown may legally skip a level (for example `##` at document start),
+  // and sparse string arrays would later expand into `undefined` breadcrumbs.
+  const headings: Array<{ depth: number; text: string }> = [];
   const paragraphs: Paragraph[] = [];
   let buffer: Array<{ line: string; number: number }> = [];
   const flush = () => {
     const text = buffer.map((item) => item.line).join("\n").trim();
-    if (text) paragraphs.push({ text, startLine: buffer[0].number, endLine: buffer.at(-1)!.number, breadcrumb: [...headings] });
+    if (text) paragraphs.push({ text, startLine: buffer[0].number, endLine: buffer.at(-1)!.number, breadcrumb: headings.map((heading) => heading.text) });
     buffer = [];
   };
 
@@ -96,9 +99,16 @@ export function chunkMarkdown(filePath: string, markdown: string, options: Chunk
     const match = item.line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (match) {
       flush();
-      const depth = match[1].length;
-      headings.length = depth - 1;
-      headings[depth - 1] = match[2].trim();
+      const marker = match[1];
+      const title = match[2];
+      if (!marker || !title) continue;
+      const depth = marker.length;
+      while (true) {
+        const previous = headings.at(-1);
+        if (!previous || previous.depth < depth) break;
+        headings.pop();
+      }
+      headings.push({ depth, text: title.trim() });
       continue;
     }
     if (!item.line.trim()) flush();
