@@ -2,22 +2,31 @@ import { Editor, MarkdownView, Plugin, TAbstractFile, TFile, WorkspaceLeaf, requ
 import { chunkMarkdown, embeddingText } from "./chunker";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
 import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
+import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
 import { PersistentIndex } from "./persistent-index";
+import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded } from "./index-scope";
 import { buildQueryContext } from "./query-context";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { rankChunks } from "./retrieval";
-import { DEFAULT_SETTINGS, excludedDirectoryList, SideGrepSettings, SideGrepSettingTab } from "./settings";
+import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
 
 interface PluginData {
-  settings?: Partial<SideGrepSettings>;
+  settings?: StoredSideGrepSettings;
   index?: PersistentIndexData;
 }
 
+/** Read-only index-scope state intended for settings and other UI consumers. */
+export interface IndexScopeView {
+  status: IndexScopeStatus;
+  desired: IndexScope;
+  effective?: IndexScope;
+}
+
 export default class SideGrepPlugin extends Plugin implements SidebarActions {
-  settings: SideGrepSettings = { ...DEFAULT_SETTINGS };
+  settings: SideGrepSettings = migrateSettings();
   private index!: PersistentIndex;
   private queryTimer: number | undefined;
   private modelTimer: number | undefined;
@@ -29,13 +38,22 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private lastActivatedMarkdownPath: string | undefined;
   private state: SidebarState = { kind: "waiting-input", message: "等待输入" };
   private results: SearchResult[] = [];
+  private preparingIndex = false;
   private indexing = false;
+  private readonly vaultRevision = new VaultRevision();
   private readonly buildCancellation = new BuildCancellationController();
 
   async onload(): Promise<void> {
     const saved = (await this.loadData() ?? {}) as PluginData;
-    this.settings = { ...DEFAULT_SETTINGS, ...saved.settings };
-    this.index = new PersistentIndex(this.indexIdentity(), saved.index);
+    this.settings = migrateSettings(saved.settings);
+    this.index = new PersistentIndex(this.indexIdentity(), saved.index, this.desiredIndexScope());
+    const legacyIndexWasCompleted = saved.index && (saved.index.initialized ?? saved.index.updatedAt > 0);
+    const savedExcludedDirectories = saved.settings?.excludedDirectories;
+    const settingsScopeWasMigrated = savedExcludedDirectories !== undefined &&
+      JSON.stringify(savedExcludedDirectories) !== JSON.stringify(this.settings.excludedDirectories);
+    if (settingsScopeWasMigrated || (legacyIndexWasCompleted && !saved.index?.scope) || saved.index?.schemaVersion === 1 || saved.index?.schemaVersion === 2) {
+      await this.saveData({ settings: this.settings, index: this.index.serialize() });
+    }
     this.syncQueryAvailability();
     this.registerView(PALIMPSEST_VIEW_TYPE, (leaf) => new SideGrepView(leaf, this));
     this.addSettingTab(new SideGrepSettingTab(this.app, this));
@@ -66,13 +84,14 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   async saveSettings(): Promise<void> {
+    this.settings = migrateSettings(this.settings);
     await this.saveData({ settings: this.settings, index: this.index.serialize() });
   }
 
   onSettingsChanged(): void {
     this.queryGate.invalidate();
     this.syncQueryAvailability();
-    if (!this.indexing) this.showIndexRequirement("影响 embedding 的配置已改变，请重建索引");
+    if (!this.isBuildActive()) this.showIndexRequirement("影响 embedding 的配置已改变，请重建索引");
     this.present(this.state, this.results);
   }
 
@@ -87,9 +106,28 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     };
   }
 
+  private desiredIndexScope(): IndexScope {
+    return indexScope(this.settings.excludedDirectories);
+  }
+
+  /** Returns copied scope state; UI consumers cannot mutate the formal index. */
+  getIndexScopeView(): IndexScopeView {
+    const desired = this.desiredIndexScope();
+    const effective = this.index.scope;
+    return {
+      status: indexScopeStatus(desired, effective),
+      desired: { excludedDirectories: [...desired.excludedDirectories] },
+      effective: effective && { excludedDirectories: [...effective.excludedDirectories] }
+    };
+  }
+
   private syncQueryAvailability(): void {
     const lifecycle = this.index.lifecycle(this.indexIdentity());
     this.lifecycle.setIndexAvailability(lifecycle === "ready" ? "ready" : lifecycle === "incompatible" ? "incompatible" : "uninitialized");
+  }
+
+  private isBuildActive(): boolean {
+    return this.preparingIndex || this.indexing;
   }
 
   private provider(): OllamaEmbeddingProvider {
@@ -144,7 +182,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
     // Build progress is authoritative: input only invalidates stale work and is
     // queried from the latest buffer once a successful build calls indexReady.
-    if (this.indexing) return;
+    if (this.isBuildActive()) return;
     if (!this.index.isReady(this.indexIdentity())) {
       this.showIndexRequirement();
       return;
@@ -163,7 +201,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   private async runQuery(generation: number, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): Promise<void> {
     if (!this.queryGate.isCurrent(generation) || editor.getValue() !== scheduledBuffer || this.latestMarkdownView !== view) return;
-    if (this.indexing) return;
+    if (this.isBuildActive()) return;
     if (!this.index.isReady(this.indexIdentity())) {
       this.showIndexRequirement();
       return;
@@ -208,7 +246,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private scheduleFileUpdate(file: TAbstractFile): void {
-    if (this.indexing) {
+    this.vaultRevision.noteChange();
+    if (this.isBuildActive()) {
       this.pendingChangedPaths.add(file.path);
       return;
     }
@@ -219,7 +258,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private async flushFileUpdates(): Promise<void> {
-    if (this.indexing || !this.index.isReady(this.indexIdentity())) return;
+    if (this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
     const paths = [...this.pendingChangedPaths];
     this.pendingChangedPaths.clear();
     for (const path of paths) await this.updateChangedFile(path);
@@ -232,80 +271,160 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private async updateChangedFile(filePath: string): Promise<void> {
-    if (this.indexing || !this.index.isReady(this.indexIdentity())) return;
+    if (this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
+    const effectiveScope = this.index.scope;
+    if (!effectiveScope) return;
     const file = this.app.vault.getAbstractFileByPath(filePath);
     const retained = this.index.chunks.filter((chunk) => chunk.filePath !== filePath);
     try {
-      if (!(file instanceof TFile) || file.extension !== "md" || this.isExcluded(file.path)) {
-        await this.commitIndex(this.indexIdentity(), [...retained]);
+      if (!(file instanceof TFile) || file.extension !== "md" || this.isExcluded(file.path, effectiveScope)) {
+        await this.commitIncrementalIndex(this.indexIdentity(), [...retained]);
         return;
       }
-      const indexed = await this.indexFiles([file], this.index.reusableById(this.indexIdentity()), () => false, false);
-      await this.commitIndex(this.indexIdentity(), [...retained, ...indexed]);
+      const indexed = await this.indexChangedFiles([file], this.index.reusableById(this.indexIdentity()));
+      await this.commitIncrementalIndex(this.indexIdentity(), [...retained, ...indexed]);
     } catch (error) {
       this.present({ kind: "query-failed", message: `增量索引失败：${error instanceof Error ? error.message : String(error)}` }, this.results);
     }
   }
 
   async rebuildIndex(): Promise<void> {
-    if (this.indexing) return;
+    if (this.isBuildActive()) return;
+    const hadUsableIndex = this.index.isReady(this.indexIdentity());
+    try {
+      const plan = await this.prepareIndexBuild();
+      await this.executePreparedIndexBuild(plan);
+    } catch (error) {
+      this.presentBuildFailure(error, hadUsableIndex);
+    }
+  }
+
+  /** Scans a full build into an opaque plan without embedding or committing. */
+  async prepareIndexBuild(): Promise<PreparedIndexBuild> {
+    if (this.isBuildActive()) throw new Error("An index build is already active");
     const identity = this.indexIdentity();
-    const hadUsableIndex = this.index.isReady(identity);
-    this.indexing = true;
+    const scope = this.desiredIndexScope();
+    const vaultRevision = this.vaultRevision.value;
+    const allFiles = this.app.vault.getMarkdownFiles();
+    const files = allFiles.filter((file) => !this.isExcluded(file.path, scope));
+    const chunks: Chunk[] = [];
+    this.preparingIndex = true;
     const buildToken = this.buildCancellation.startBuild();
     this.queryGate.invalidate();
-    const files = this.app.vault.getMarkdownFiles().filter((file) => !this.isExcluded(file.path));
     this.presentIndexProgress({ phase: "scanning", current: 0, total: files.length, label: "正在扫描笔记" });
     try {
-      // The old PersistentIndex is deliberately untouched until this complete
-      // candidate has been embedded, checked for cancellation, and saved.
-      const chunks = await this.indexFiles(files, this.index.reusableById(identity), () => this.buildCancellation.isBuildCancelled(buildToken), true);
-      this.buildCancellation.assertBuildCanContinue(buildToken);
-      this.presentIndexProgress({ phase: "saving", current: chunks.length, total: chunks.length, label: "正在保存索引" });
-      await this.commitIndex(identity, chunks, buildToken);
-      this.syncQueryAvailability();
-      const schedule = this.lifecycle.indexReady();
-      this.present({ kind: "complete", message: `索引完成：${chunks.length} 个片段` }, this.results);
-      // The index has committed; allow the required index-ready query to run
-      // now rather than making it wait for finally or another keystroke.
-      this.indexing = false;
-      if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
-    } catch (error) {
-      if (error instanceof IndexBuildCancelled) {
-        this.present({
-          kind: "index-cancelled",
-          message: hadUsableIndex ? "已取消重建，正在继续使用原有索引" : "已取消。尚未建立知识库索引",
-          indexAction: hadUsableIndex ? "rebuild" : "build"
-        }, hadUsableIndex ? this.results : []);
-      } else {
-        const unavailable = error instanceof EmbeddingError && error.kind === "connection";
-        this.present({
-          kind: "index-failed",
-          message: unavailable ? "建库失败：Ollama 不可用" : `建库失败：${error instanceof Error ? error.message : String(error)}`,
-          indexAction: "retry"
-        }, hadUsableIndex ? this.results : []);
+      for (let index = 0; index < files.length; index++) {
+        this.buildCancellation.assertBuildCanContinue(buildToken);
+        const file = files[index];
+        const markdown = await this.app.vault.cachedRead(file);
+        this.buildCancellation.assertBuildCanContinue(buildToken);
+        chunks.push(...chunkMarkdown(file.path, markdown, {
+          targetLength: identity.chunkTargetLength,
+          maxLength: identity.chunkMaxLength,
+          minLength: identity.chunkMinLength
+        }));
+        this.buildCancellation.assertBuildCanContinue(buildToken);
+        this.presentIndexProgress({ phase: "scanning", current: index + 1, total: files.length, label: "正在扫描笔记" });
+        if (index % 8 === 7) {
+          await this.yieldToUi();
+          this.buildCancellation.assertBuildCanContinue(buildToken);
+        }
       }
+      this.buildCancellation.assertBuildCanContinue(buildToken);
+      // preparePlan performs the global duplicate-ID preflight before any
+      // execution code is allowed to call document embedding.
+      return preparePlan({
+        totalMarkdownFiles: allFiles.length,
+        includedFiles: files.length,
+        chunks,
+        reusableById: this.index.reusableById(identity),
+        vaultRevision,
+        scope,
+        identity,
+        currentState: () => ({
+          vaultRevision: this.vaultRevision.value,
+          identity: this.indexIdentity(),
+          scope: this.desiredIndexScope()
+        })
+      });
     } finally {
       this.buildCancellation.finishBuild(buildToken);
+      this.preparingIndex = false;
+      if (this.index.isReady(this.indexIdentity()) && this.pendingChangedPaths.size) void this.flushFileUpdates();
+    }
+  }
+
+  /** Executes a previously prepared plan; the plan module rejects stale input before embedding. */
+  async executePreparedIndexBuild(plan: PreparedIndexBuild): Promise<void> {
+    if (this.isBuildActive()) throw new Error("An index build is already active");
+    const current = { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.desiredIndexScope() };
+    // Validate before changing build state or constructing an embedding request.
+    assertIndexBuildPlanCurrent(plan, current);
+    const provider = this.provider();
+    const batchSize = this.settings.embeddingBatchSize;
+    let buildToken: BuildCancellationToken | undefined;
+    try {
+      this.indexing = true;
+      buildToken = this.buildCancellation.startBuild();
+      this.queryGate.invalidate();
+      const executed = await executePlan(plan, {
+        current,
+        batchSize,
+        embedDocuments: async (chunks) => (await provider.embedDocuments(chunks.map(embeddingText))).vectors,
+        assertCanContinue: () => this.buildCancellation.assertBuildCanContinue(buildToken!),
+        yieldToUi: () => this.yieldToUi(),
+        onEmbeddingProgress: (current, total) => this.presentIndexProgress({ phase: "embedding", current, total, label: "正在生成向量" })
+      });
+      this.buildCancellation.assertBuildCanContinue(buildToken);
+      this.presentIndexProgress({ phase: "saving", current: executed.chunks.length, total: executed.chunks.length, label: "正在保存索引" });
+      await this.commitFullIndex(executed.identity, executed.chunks, executed.scope, buildToken);
+      this.syncQueryAvailability();
+      this.present({ kind: "complete", message: `索引完成：${executed.chunks.length} 个片段` }, this.results);
+      // Settings may have changed after execution began. In that case the
+      // committed plan remains valid but query readiness follows new settings.
+      this.indexing = false;
+      if (this.index.isReady(this.indexIdentity())) {
+        const schedule = this.lifecycle.indexReady();
+        if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
+      }
+    } finally {
+      if (buildToken) this.buildCancellation.finishBuild(buildToken);
       this.indexing = false;
       if (this.index.isReady(this.indexIdentity()) && this.pendingChangedPaths.size) void this.flushFileUpdates();
       if (!this.index.isReady(this.indexIdentity())) this.pendingChangedPaths.clear();
     }
   }
 
+  private presentBuildFailure(error: unknown, hadUsableIndex: boolean): void {
+    if (error instanceof IndexBuildCancelled) {
+      this.present({
+        kind: "index-cancelled",
+        message: hadUsableIndex ? "已取消重建，正在继续使用原有索引" : "已取消。尚未建立知识库索引",
+        indexAction: hadUsableIndex ? "rebuild" : "build"
+      }, hadUsableIndex ? this.results : []);
+      return;
+    }
+    const unavailable = error instanceof EmbeddingError && error.kind === "connection";
+    const stale = error instanceof IndexBuildPlanStale;
+    this.present({
+      kind: "index-failed",
+      message: stale ? "构建计划已过期，请重新开始扫描" : unavailable ? "建库失败：Ollama 不可用" : `建库失败：${error instanceof Error ? error.message : String(error)}`,
+      indexAction: "retry"
+    }, hadUsableIndex ? this.results : []);
+  }
+
   cancelIndex(): void {
-    if (!this.indexing) return;
+    if (!this.isBuildActive()) return;
     this.buildCancellation.cancelCurrentBuild();
   }
 
-  private async indexFiles(files: TFile[], reusable: Map<string, IndexedChunk>, cancelled: () => boolean, reportProgress: boolean): Promise<IndexedChunk[]> {
+  /** Incremental updates retain their existing immediate scan/embed behavior. */
+  private async indexChangedFiles(files: TFile[], reusable: Map<string, IndexedChunk>): Promise<IndexedChunk[]> {
     const pending: Chunk[] = [];
     const output: IndexedChunk[] = [];
     for (let i = 0; i < files.length; i++) {
-      if (cancelled()) throw new IndexBuildCancelled();
       const file = files[i];
       const markdown = await this.app.vault.cachedRead(file);
-      if (cancelled()) throw new IndexBuildCancelled();
       const chunks = chunkMarkdown(file.path, markdown, {
         targetLength: this.settings.chunkTargetLength,
         maxLength: this.settings.chunkMaxLength,
@@ -316,19 +435,14 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         if (cached && cached.contentHash === chunk.contentHash) output.push({ ...chunk, vector: cached.vector });
         else pending.push(chunk);
       }
-      if (reportProgress) this.presentIndexProgress({ phase: "scanning", current: i + 1, total: files.length, label: "正在扫描笔记" });
       if (i % 8 === 7) await this.yieldToUi();
     }
     for (let start = 0; start < pending.length; start += this.settings.embeddingBatchSize) {
-      if (cancelled()) throw new IndexBuildCancelled();
       const batch = pending.slice(start, start + this.settings.embeddingBatchSize);
       const response = await this.provider().embedDocuments(batch.map(embeddingText));
-      if (cancelled()) throw new IndexBuildCancelled();
       output.push(...batch.map((chunk, index) => ({ ...chunk, vector: response.vectors[index] })));
-      if (reportProgress) this.presentIndexProgress({ phase: "embedding", current: Math.min(start + batch.length, pending.length), total: pending.length, label: "正在生成向量" });
       await this.yieldToUi();
     }
-    if (cancelled()) throw new IndexBuildCancelled();
     return output;
   }
 
@@ -336,9 +450,16 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.present({ kind: "indexing", message: progress.label, progress }, this.results);
   }
 
-  private async commitIndex(identity: IndexIdentity, chunks: IndexedChunk[], buildToken?: BuildCancellationToken): Promise<void> {
+  private async commitFullIndex(identity: IndexIdentity, chunks: IndexedChunk[], scope: IndexScope, buildToken: BuildCancellationToken): Promise<void> {
+    await this.persistIndexCandidate(this.index.fullReplacement(identity, chunks, scope), buildToken);
+  }
+
+  private async commitIncrementalIndex(identity: IndexIdentity, chunks: IndexedChunk[]): Promise<void> {
+    await this.persistIndexCandidate(this.index.incrementalReplacement(identity, chunks));
+  }
+
+  private async persistIndexCandidate(candidate: PersistentIndexData, buildToken?: BuildCancellationToken): Promise<void> {
     this.buildCancellation.assertCommitCanProceed(buildToken);
-    const candidate = this.index.replacement(identity, chunks);
     await this.saveData({ settings: this.settings, index: candidate });
     // saveData can yield to Obsidian lifecycle callbacks; never update the
     // in-memory index after plugin unload, even for an incremental operation.
@@ -350,12 +471,12 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
 
-  private isExcluded(path: string): boolean {
-    return excludedDirectoryList(this.settings.excludedDirectories).some((directory) => path === directory || path.startsWith(`${directory}/`));
+  private isExcluded(path: string, scope: IndexScope): boolean {
+    return isPathExcluded(path, scope);
   }
 
   private showIndexRequirement(message?: string): void {
-    if (this.indexing || this.state.kind === "index-cancelled" || this.state.kind === "index-failed") return;
+    if (this.isBuildActive() || this.state.kind === "index-cancelled" || this.state.kind === "index-failed") return;
     const lifecycle = this.index.lifecycle(this.indexIdentity());
     if (lifecycle === "ready") return;
     if (lifecycle === "incompatible") {
@@ -391,7 +512,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   refreshCurrentQuery(): void {
-    if (!this.index.isReady(this.indexIdentity()) || this.indexing) return;
+    if (!this.index.isReady(this.indexIdentity()) || this.isBuildActive()) return;
     const schedule = this.lifecycle.sidebarOpened();
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
   }

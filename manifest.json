@@ -2,7 +2,7 @@
   "id": "palimpsest",
   "name": "Palimpsest",
   "version": "0.1.0",
-  "minAppVersion": "1.5.0",
+  "minAppVersion": "1.12.0",
   "description": "Palimpsest — an Obsidian side channel to your past",
   "author": "Prototype",
   "isDesktopOnly": true

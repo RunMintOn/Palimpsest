@@ -1,3 +1,5 @@
+import { IndexScope } from "./index-scope";
+
 export const CHUNKER_VERSION = "2";
 
 export interface Chunk {
@@ -31,6 +33,8 @@ export interface PersistentIndexData {
   chunks: IndexedChunk[];
   updatedAt: number;
   initialized?: boolean;
+  /** Schema 3 snapshots the directories used by the successful full build. */
+  scope?: IndexScope;
 }
 
 export type IndexLifecycle = "uninitialized" | "ready" | "incompatible" | "building" | "cancelled" | "failed";

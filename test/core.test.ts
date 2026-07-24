@@ -5,19 +5,37 @@ import { chunkMarkdown } from "../src/chunker";
 import { EmbeddingError, OllamaEmbeddingProvider } from "../src/embedding-provider";
 import { shouldAutoExpand } from "../src/expansion-policy";
 import { BuildCancellationController, IndexBuildCancelled } from "../src/build-cancellation";
+import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, executePreparedIndexBuild, prepareIndexBuild } from "../src/index-build-plan";
+import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
 import { PersistentIndex } from "../src/persistent-index";
 import { buildQueryContext } from "../src/query-context";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
 import { hasMaterialResultChange } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
-import { CHUNKER_VERSION, IndexedChunk } from "../src/types";
+import { CHUNKER_VERSION, Chunk, IndexedChunk } from "../src/types";
 
 const options = { targetLength: 120, maxLength: 180, minLength: 30 };
 const identity = { model: "qwen3-embedding:0.6b", dimensions: 3, chunkerVersion: CHUNKER_VERSION, chunkTargetLength: 120, chunkMaxLength: 180, chunkMinLength: 30 };
 
 function indexed(id: string, filePath: string, text: string, vector: number[]): IndexedChunk {
   return { id, contentHash: id, filePath, fileName: filePath.replace(/\.md$/, ""), breadcrumb: [], text, startLine: 1, endLine: 1, vector };
+}
+
+function chunk(id: string, filePath: string, text: string, contentHash = id): Chunk {
+  return { id, contentHash, filePath, fileName: filePath.replace(/\.md$/, ""), breadcrumb: [filePath], text, startLine: 1, endLine: 1 };
+}
+
+function buildPlan(chunks: Chunk[], reusable = new Map<string, IndexedChunk>(), overrides: Partial<{ totalMarkdownFiles: number; includedFiles: number; revision: number; scope: ReturnType<typeof indexScope>; identity: typeof identity }> = {}) {
+  return prepareIndexBuild({
+    totalMarkdownFiles: overrides.totalMarkdownFiles ?? 3,
+    includedFiles: overrides.includedFiles ?? 2,
+    chunks,
+    reusableById: reusable,
+    vaultRevision: overrides.revision ?? 1,
+    scope: overrides.scope ?? indexScope("Archive"),
+    identity: overrides.identity ?? identity
+  });
 }
 
 test("Chinese fixture: frontmatter is excluded, headings form breadcrumbs, and line numbers are retained", async () => {
@@ -71,7 +89,7 @@ test("chunk IDs distinguish repeated occurrences without making unrelated edits 
   assert.equal(original[0].id, inserted.find((chunk) => chunk.text === unique)?.id, "unrelated leading content must not change a unique chunk ID");
 
   const index = new PersistentIndex(identity);
-  assert.doesNotThrow(() => index.replacement(identity, repeated.map((chunk) => ({ ...chunk, vector: [1, 0, 0] }))), "fixed duplicate-content chunks are accepted by PersistentIndex");
+  assert.doesNotThrow(() => index.fullReplacement(identity, repeated.map((chunk) => ({ ...chunk, vector: [1, 0, 0] })), indexScope([])), "fixed duplicate-content chunks are accepted by PersistentIndex");
 });
 
 test("query context uses current paragraph, heading, and prior paragraph with a length bound", () => {
@@ -119,6 +137,267 @@ test("model or dimensions changes make a persisted index incompatible", () => {
   assert.equal(index.isCompatible({ ...identity, model: "other" }), false);
 });
 
+test("legacy excluded-directory strings migrate to a normalized structured scope", () => {
+  assert.deepEqual(indexScope(".obsidian, templates"), { excludedDirectories: [".obsidian", "templates"] });
+});
+
+test("index scope normalizes multiline paths, separators, empty entries, duplicates, and order", () => {
+  assert.deepEqual(
+    indexScope(" /Archive/ \nTemplates\\drafts, Archive, , /Templates/drafts/ "),
+    { excludedDirectories: ["Archive", "Templates/drafts"] }
+  );
+  assert.deepEqual(indexScope(["z", "a", "m"]), { excludedDirectories: ["a", "m", "z"] });
+});
+
+test("excluded-directory matching respects path boundaries", () => {
+  const scope = indexScope(["Archive"]);
+  assert.equal(isPathExcluded("Archive", scope), true);
+  assert.equal(isPathExcluded("Archive/a.md", scope), true);
+  assert.equal(isPathExcluded("Archive2/a.md", scope), false);
+});
+
+test("scope equality is independent of input ordering", () => {
+  assert.equal(sameIndexScope(indexScope(["Templates", "Archive"]), indexScope(["Archive", "Templates"])), true);
+});
+
+test("directory selection adds a normal directory in stable normalized order", () => {
+  assert.deepEqual(addExcludedDirectory(["Templates"], "Archive"), ["Archive", "Templates"]);
+});
+
+test("directory selection does not add duplicate directories or children of excluded parents", () => {
+  assert.deepEqual(addExcludedDirectory(["Archive"], "Archive"), ["Archive"]);
+  assert.deepEqual(addExcludedDirectory(["Archive"], "Archive/2024"), ["Archive"]);
+});
+
+test("selecting a parent directory removes already excluded child directories", () => {
+  assert.deepEqual(addExcludedDirectory(["Archive/2024", "Templates", "Archive/2023"], "Archive"), ["Archive", "Templates"]);
+});
+
+test("directory selection respects path boundaries and rejects the vault root", () => {
+  assert.deepEqual(addExcludedDirectory(["Archive2"], "Archive"), ["Archive", "Archive2"]);
+  assert.deepEqual(addExcludedDirectory(["Archive"], "Archive2"), ["Archive", "Archive2"]);
+  assert.deepEqual(addExcludedDirectory(["Archive"], "/"), ["Archive"]);
+});
+
+test("directory picker candidates exclude the root and directories already covered by an exclusion", () => {
+  assert.deepEqual(
+    filterExcludedDirectoryCandidates(["", "Archive", "Archive/2023", "Archive2", "Templates"], ["Archive"]),
+    ["Archive2", "Templates"]
+  );
+  assert.deepEqual(
+    filterExcludedDirectoryCandidates(["Archive", "Archive/2023", "Archive/2024"], ["Archive/2023", "Archive/2024"]),
+    ["Archive"]
+  );
+});
+
+test("prepared build summarizes file counts and classifies only exact cached chunks as reusable", () => {
+  const first = chunk("first", "a.md", "first", "hash-a");
+  const changed = chunk("changed", "b.md", "changed", "hash-new");
+  const plan = buildPlan([first, changed], new Map([
+    ["first", { ...indexed("first", "old.md", "old metadata", [1, 0, 0]), contentHash: "hash-a" }],
+    ["changed", indexed("changed", "b.md", "changed", [0, 1, 0])]
+  ]));
+  assert.deepEqual(plan.summary, {
+    totalMarkdownFiles: 3,
+    excludedFiles: 1,
+    includedFiles: 2,
+    totalChunks: 2,
+    reusableChunks: 1,
+    pendingChunks: 1,
+    scope: indexScope("Archive"),
+    model: identity.model,
+    dimensions: identity.dimensions
+  });
+  assert.equal(plan.summary.totalChunks, plan.summary.reusableChunks + plan.summary.pendingChunks);
+});
+
+test("prepared build executes pending chunks only, keeps scan order, and retains fresh chunk metadata", async () => {
+  const first = chunk("first", "new-a.md", "fresh text", "hash-a");
+  const pending = chunk("pending", "b.md", "embed me", "hash-b");
+  const cached = { ...indexed("first", "old-a.md", "stale text", [1, 0, 0]), contentHash: "hash-a" };
+  const plan = buildPlan([first, pending], new Map([["first", cached]]));
+  const requested: string[][] = [];
+  const pendingVector = [0, 1, 0];
+  const executed = await executePreparedIndexBuild(plan, {
+    current: { vaultRevision: 1, identity, scope: indexScope("Archive") },
+    batchSize: 10,
+    embedDocuments: async (chunks) => {
+      requested.push(chunks.map((item) => item.id));
+      return [pendingVector];
+    },
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.deepEqual(requested, [["pending"]]);
+  assert.deepEqual(executed.chunks.map((item) => item.id), ["first", "pending"]);
+  assert.equal(executed.chunks[0].filePath, "new-a.md");
+  assert.equal(executed.chunks[0].text, "fresh text");
+  assert.deepEqual(executed.chunks.map((item) => item.vector), [[1, 0, 0], [0, 1, 0]]);
+  assert.strictEqual(executed.chunks[0].vector, cached.vector, "reusable vectors share the formal-index reference");
+  assert.equal(Object.isFrozen(cached.vector), false, "planning does not freeze or otherwise mutate the formal-index vector");
+  assert.notStrictEqual(executed.chunks[0], cached, "new scan metadata never reuses the old IndexedChunk object");
+  assert.strictEqual(executed.chunks[1].vector, pendingVector, "new embedding vectors are not copied again before the candidate");
+  assert.deepEqual(executed.scope, indexScope("Archive"));
+});
+
+test("empty vault and fully reusable plans do not request document embeddings", async () => {
+  const empty = buildPlan([], new Map(), { totalMarkdownFiles: 0, includedFiles: 0 });
+  assert.deepEqual(empty.summary, {
+    totalMarkdownFiles: 0, excludedFiles: 0, includedFiles: 0,
+    totalChunks: 0, reusableChunks: 0, pendingChunks: 0,
+    scope: indexScope("Archive"), model: identity.model, dimensions: identity.dimensions
+  });
+  let calls = 0;
+  const reusable = buildPlan([chunk("a", "a.md", "a")], new Map([["a", indexed("a", "a.md", "old", [1, 0, 0])]]));
+  const executed = await executePreparedIndexBuild(reusable, {
+    current: { vaultRevision: 1, identity, scope: indexScope("Archive") }, batchSize: 2,
+    embedDocuments: async () => { calls++; return []; }, assertCanContinue: () => undefined, yieldToUi: async () => undefined
+  });
+  assert.equal(calls, 0);
+  assert.equal(executed.chunks.length, 1);
+});
+
+test("duplicate chunk IDs fail during prepare with both contexts before embedding", () => {
+  const first = { ...chunk("duplicate", "first.md", "first text"), breadcrumb: ["First"], startLine: 4 };
+  const second = { ...chunk("duplicate", "second.md", "second text"), breadcrumb: ["Second"], startLine: 8 };
+  let embeddingCalls = 0;
+  assert.throws(() => {
+    void embeddingCalls;
+    buildPlan([first, second]);
+  }, (error: unknown) => error instanceof DuplicateIndexChunkIdError &&
+    error.message.includes("first.md") && error.message.includes("second.md") &&
+    error.message.includes("First") && error.message.includes("Second") &&
+    error.message.includes("first text") && error.message.includes("second text"));
+  assert.equal(embeddingCalls, 0);
+});
+
+test("vault revision, identity, and desired scope changes stale a plan before embedding", async () => {
+  const revision = new VaultRevision();
+  const plan = buildPlan([chunk("a", "a.md", "a")], new Map(), { revision: revision.value });
+  revision.noteChange(); // create, modify, or delete all use this production revision seam.
+  const staleStates = [
+    { vaultRevision: revision.value, identity, scope: indexScope("Archive") },
+    { vaultRevision: 0, identity: { ...identity, model: "other" }, scope: indexScope("Archive") },
+    { vaultRevision: 0, identity, scope: indexScope("Templates") }
+  ];
+  for (const current of staleStates) {
+    let embeddingCalls = 0;
+    await assert.rejects(() => executePreparedIndexBuild(plan, {
+      current, batchSize: 1,
+      embedDocuments: async () => { embeddingCalls++; return [[1, 0, 0]]; },
+      assertCanContinue: () => undefined, yieldToUi: async () => undefined
+    }), IndexBuildPlanStale);
+    assert.equal(embeddingCalls, 0);
+  }
+});
+
+test("prepare rejects changes discovered at scan completion instead of returning a stale plan", () => {
+  const base = {
+    totalMarkdownFiles: 1,
+    includedFiles: 1,
+    chunks: [chunk("a", "a.md", "a")],
+    reusableById: new Map<string, IndexedChunk>(),
+    vaultRevision: 4,
+    scope: indexScope("Archive"),
+    identity
+  };
+  assert.throws(() => prepareIndexBuild({ ...base, currentState: () => ({ vaultRevision: 5, identity, scope: indexScope("Archive") }) }), (error: unknown) => error instanceof IndexBuildPlanStale && error.reason === "vault");
+  assert.throws(() => prepareIndexBuild({ ...base, currentState: () => ({ vaultRevision: 4, identity: { ...identity, dimensions: 4 }, scope: indexScope("Archive") }) }), (error: unknown) => error instanceof IndexBuildPlanStale && error.reason === "identity");
+  assert.throws(() => prepareIndexBuild({ ...base, currentState: () => ({ vaultRevision: 4, identity, scope: indexScope("Templates") }) }), (error: unknown) => error instanceof IndexBuildPlanStale && error.reason === "scope");
+});
+
+test("a cancelled preparation token is finished before the next independent execution token starts", () => {
+  const cancellation = new BuildCancellationController();
+  const preparation = cancellation.startBuild();
+  cancellation.cancelCurrentBuild();
+  assert.throws(() => cancellation.assertBuildCanContinue(preparation), IndexBuildCancelled);
+  cancellation.finishBuild(preparation);
+
+  const execution = cancellation.startBuild();
+  assert.doesNotThrow(() => cancellation.assertBuildCanContinue(execution));
+  cancellation.finishBuild(execution);
+});
+
+test("cancelled or failed plan execution produces no candidate to replace the existing index", async () => {
+  const existing = new PersistentIndex(identity);
+  existing.commit(existing.fullReplacement(identity, [indexed("old", "old.md", "old", [1, 0, 0])], indexScope("Archive")));
+  const plan = buildPlan([chunk("new", "new.md", "new")]);
+  await assert.rejects(() => executePreparedIndexBuild(plan, {
+    current: { vaultRevision: 1, identity, scope: indexScope("Archive") }, batchSize: 1,
+    embedDocuments: async () => { throw new Error("embedding failed"); },
+    assertCanContinue: () => undefined, yieldToUi: async () => undefined
+  }), /embedding failed/);
+  assert.deepEqual(existing.chunks.map((item) => item.id), ["old"]);
+  assert.deepEqual(existing.scope, indexScope("Archive"));
+
+  let embeddingCalls = 0;
+  await assert.rejects(() => executePreparedIndexBuild(plan, {
+    current: { vaultRevision: 1, identity, scope: indexScope("Archive") }, batchSize: 1,
+    embedDocuments: async () => { embeddingCalls++; return [[1, 0, 0]]; },
+    assertCanContinue: () => { throw new IndexBuildCancelled(); }, yieldToUi: async () => undefined
+  }), IndexBuildCancelled);
+  assert.equal(embeddingCalls, 0);
+  assert.deepEqual(existing.scope, indexScope("Archive"));
+});
+
+test("legacy completed indexes gain the settings scope without becoming incompatible", () => {
+  const legacy = new PersistentIndex(identity, {
+    identity,
+    chunks: [indexed("x", "a.md", "text", [1, 0, 0])],
+    updatedAt: 1
+  }, indexScope(".obsidian, Archive"));
+  assert.equal(legacy.lifecycle(identity), "ready");
+  assert.deepEqual(legacy.scope, indexScope(["Archive", ".obsidian"]));
+  assert.equal(legacy.serialize().schemaVersion, 3);
+  assert.deepEqual(legacy.serialize().scope, indexScope(["Archive", ".obsidian"]));
+  assert.equal(legacy.scopeStatus(indexScope(["Archive", "Templates"])), "pending");
+});
+
+test("changing desired scope leaves the hard-compatibility lifecycle ready", () => {
+  const index = new PersistentIndex(identity);
+  index.commit(index.fullReplacement(identity, [indexed("old", "a.md", "text", [1, 0, 0])], indexScope("Archive")));
+  assert.equal(index.lifecycle(identity), "ready");
+  assert.equal(index.scopeStatus(indexScope("Templates")), "pending");
+});
+
+test("only a successful full replacement commits its scope; cancellation, failure, and incremental replacements preserve the prior scope", () => {
+  const index = new PersistentIndex(identity);
+  const oldScope = indexScope("Archive");
+  index.commit(index.fullReplacement(identity, [indexed("old", "a.md", "text", [1, 0, 0])], oldScope));
+
+  const cancelledCandidate = index.fullReplacement(identity, [indexed("cancelled", "b.md", "text", [1, 0, 0])], indexScope("Templates"));
+  // A cancelled full build deliberately never commits its candidate.
+  void cancelledCandidate;
+  assert.deepEqual(index.scope, oldScope);
+
+  const failedCandidate = index.fullReplacement(identity, [indexed("failed", "b.md", "text", [1, 0, 0])], indexScope("Failed"));
+  // A failed full build also deliberately never commits its candidate.
+  void failedCandidate;
+  assert.deepEqual(index.scope, oldScope);
+
+  index.commit(index.incrementalReplacement(identity, [...index.chunks, indexed("incremental", "b.md", "text", [1, 0, 0])]));
+  assert.deepEqual(index.scope, oldScope);
+
+  const newScope = indexScope("Templates");
+  index.commit(index.fullReplacement(identity, [indexed("new", "c.md", "text", [1, 0, 0])], newScope));
+  assert.deepEqual(index.scope, newScope);
+  assert.equal(index.scopeStatus(newScope), "current");
+});
+
+test("model, dimensions, chunker version, and all chunk lengths remain hard incompatible", () => {
+  const index = new PersistentIndex(identity, {
+    identity,
+    chunks: [indexed("x", "a.md", "text", [1, 0, 0])],
+    updatedAt: 1
+  }, indexScope([]));
+  assert.equal(index.isCompatible({ ...identity, model: "other" }), false);
+  assert.equal(index.isCompatible({ ...identity, dimensions: 4 }), false);
+  assert.equal(index.isCompatible({ ...identity, chunkerVersion: "other" }), false);
+  assert.equal(index.isCompatible({ ...identity, chunkTargetLength: 121 }), false);
+  assert.equal(index.isCompatible({ ...identity, chunkMaxLength: 181 }), false);
+  assert.equal(index.isCompatible({ ...identity, chunkMinLength: 31 }), false);
+});
+
 test("an index made with an older chunker version is incompatible", () => {
   const oldIdentity = { ...identity, chunkerVersion: "1" };
   const oldIndex = new PersistentIndex(identity, { identity: oldIdentity, chunks: [], updatedAt: 1 });
@@ -137,9 +416,10 @@ test("legacy completed indexes migrate to ready, while an empty completed vault 
 test("an index is uninitialized until a full build is committed, and cancellation leaves the old index intact", () => {
   const index = new PersistentIndex(identity);
   assert.equal(index.lifecycle(identity), "uninitialized");
-  const old = index.replacement(identity, [indexed("old", "a.md", "text", [1, 0, 0])]);
+  assert.equal(index.scopeStatus(indexScope("Archive")), "uninitialized");
+  const old = index.fullReplacement(identity, [indexed("old", "a.md", "text", [1, 0, 0])], indexScope([]));
   index.commit(old);
-  const cancelledReplacement = index.replacement(identity, [indexed("new", "b.md", "text", [1, 0, 0])]);
+  const cancelledReplacement = index.fullReplacement(identity, [indexed("new", "b.md", "text", [1, 0, 0])], indexScope([]));
   // A cancelled rebuild intentionally does not commit or save its candidate.
   void cancelledReplacement;
   assert.equal(index.lifecycle(identity), "ready");
@@ -157,7 +437,7 @@ test("cancelling one rebuild does not leak into a later independent incremental 
   // This is the same token-free commit permission used by a Vault incremental
   // update after the cancelled build has ended.
   assert.doesNotThrow(() => cancellation.assertCommitCanProceed());
-  index.commit(index.replacement(identity, [...index.chunks, indexed("incremental", "b.md", "text", [1, 0, 0])]));
+  index.commit(index.incrementalReplacement(identity, [...index.chunks, indexed("incremental", "b.md", "text", [1, 0, 0])]));
   assert.deepEqual(index.chunks.map((chunk) => chunk.id), ["old", "incremental"]);
 
   const nextBuild = cancellation.startBuild();
