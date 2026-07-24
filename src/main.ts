@@ -8,7 +8,7 @@ import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build
 import { confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
 import { IndexDocumentScanStale, IndexDocumentStructureError, ScannedIndexDocument, scanIndexDocument } from "./index-document-scan";
-import { PersistentIndex } from "./persistent-index";
+import { PersistentIndex, sameIdentity } from "./persistent-index";
 import { createIndexStore, IndexDocument, IndexStore } from "./index-store";
 import { indexLoadRecoveryMessage } from "./index-load-feedback";
 import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
@@ -16,7 +16,8 @@ import { executeIncrementalIndexPlan, IncrementalChangeSummary, isLargeIncrement
 import { completionActions } from "./index-update-coordination";
 import { runIndexReconciliation } from "./index-reconciliation";
 import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
-import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded } from "./index-scope";
+import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded, sameIndexScope } from "./index-scope";
+import { planIndexScopeTransition } from "./index-scope-transition";
 import { buildQueryContext } from "./query-context";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
@@ -62,6 +63,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   /** A fallback generation is queryable but deliberately not patchable in place. */
   private fallbackGenerationInUse = false;
   private retryingSkippedDocuments = false;
+  /** A user-requested scope patch keeps ordinary vault events queued until it finishes. */
+  private applyingIndexScope = false;
 
   async onload(): Promise<void> {
     let saved: unknown;
@@ -164,6 +167,15 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     };
   }
 
+  /** Narrow settings seam: scope patches require a ready, compatible non-fallback index. */
+  getIndexScopeApplicationUi(): { available: boolean; applying: boolean } {
+    const pending = this.getIndexScopeView().status === "pending";
+    return {
+      available: pending && !this.applyingIndexScope && !this.isBuildActive() && !this.fullIndexBuildRequests.isActive && !this.fallbackGenerationInUse && this.index.isReady(this.indexIdentity()),
+      applying: this.applyingIndexScope
+    };
+  }
+
   /** Copy for the settings UI; all full builds still go through confirmation. */
   getFullIndexBuildUi(): { description: string; buttonLabel: string } {
     const lifecycle = this.index.lifecycle(this.indexIdentity());
@@ -174,7 +186,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       return { description: "配置已变化，需要重新建立索引。", buttonLabel: "准备全量重建" };
     }
     if (this.getIndexScopeView().status === "pending") {
-      return { description: "通过全量重建应用新的索引范围。", buttonLabel: "准备全量重建" };
+      return { description: "索引范围设置与当前生效范围不同。可应用索引范围变化，或执行全量重建。", buttonLabel: "准备全量重建" };
     }
     return { description: "重新扫描全部范围，现有向量会尽量复用。", buttonLabel: "准备全量重建" };
   }
@@ -191,6 +203,86 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     return { documents: this.index.skippedDocuments, retrying: this.retryingSkippedDocuments };
   }
 
+  /**
+   * Applies just the document delta between the persisted effective scope and
+   * the saved desired scope. All scanning/embedding finishes before the one
+   * scope-targeted IndexStore patch becomes visible.
+   */
+  async applyIndexScopeChanges(): Promise<void> {
+    if (!this.getIndexScopeApplicationUi().available) return;
+    const effectiveScope = this.index.scope;
+    const desiredScope = this.desiredIndexScope();
+    if (!effectiveScope || sameIndexScope(effectiveScope, desiredScope)) return;
+
+    const revision = this.vaultRevision.value;
+    let patchSucceeded = false;
+    let refreshRequested = false;
+    this.applyingIndexScope = true;
+    try {
+      this.buildCancellation.assertPluginActive();
+      const markdownFiles = this.app.vault.getMarkdownFiles();
+      const transition = planIndexScopeTransition({
+        effectiveScope,
+        desiredScope,
+        markdownPaths: markdownFiles.map((file) => file.path),
+        indexedDocumentPaths: this.index.documentPaths
+      });
+      if (!transition.hasScopeChange) return;
+
+      // Only paths newly admitted by scope are ever handed to the scanner.
+      const byPath = new Map(markdownFiles.map((file) => [file.path, file]));
+      const files = transition.upsertPaths.map((path) => byPath.get(path)).filter((file): file is TFile => file !== undefined);
+      const scanned = await this.scanIncrementalDocuments(files);
+      const current = { vaultRevision: revision, identity: this.indexIdentity(), scope: desiredScope };
+      const prepared = prepareIncrementalIndexPlan({
+        documents: scanned.documents,
+        skippedDocuments: scanned.skippedDocuments,
+        deletes: transition.deletePaths,
+        reusableChunks: this.index.chunks,
+        current,
+        changes: { added: transition.upsertPaths.length, renamed: 0, modified: 0, deleted: transition.deletePaths.length }
+      });
+
+      const outcome = await runPreparedIncrementalIndexUpdate({
+        needsConfirmation: isLargeIncrementalIndexPlan(prepared.summary),
+        confirm: () => confirmLargeIncrementalIndexUpdate(this.app, prepared.summary),
+        execute: () => executeIncrementalIndexPlan(prepared, {
+          current: { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.desiredIndexScope() },
+          batchSize: this.settings.embeddingBatchSize,
+          embedDocuments: async (chunks) => (await this.provider().embedDocuments(chunks.map(embeddingText))).vectors,
+          assertCanContinue: () => this.buildCancellation.assertPluginActive(),
+          yieldToUi: () => this.yieldToUi()
+        }),
+        commit: async (executed) => {
+          this.assertScopeTransitionCurrent(effectiveScope, desiredScope, revision);
+          const durable = await this.requireIndexStore().commit({
+            kind: "patch-documents",
+            identity: this.indexIdentity(),
+            upserts: executed.upserts,
+            deletes: executed.deletes,
+            targetScope: desiredScope
+          });
+          // The durable transaction succeeded, but unload must never update
+          // the in-memory index or settings UI after it has begun.
+          this.buildCancellation.assertPluginActive();
+          this.index.commit(durable);
+          this.buildCancellation.assertPluginActive();
+        }
+      });
+      if (outcome === "cancelled") return;
+      patchSucceeded = true;
+      const activePath = this.latestMarkdownView?.file?.path;
+      refreshRequested = [...transition.upsertPaths, ...transition.deletePaths].some((path) => path !== activePath);
+      if (this.buildCancellation.isPluginActive) new Notice("索引范围已更新。");
+    } catch (error) {
+      console.error("[Palimpsest] Could not apply index scope changes", error);
+      if (this.buildCancellation.isPluginActive) new Notice("应用索引范围失败；当前索引和生效范围未改变。");
+    } finally {
+      this.applyingIndexScope = false;
+      this.completeIndexUpdate({ patchSucceeded, refreshRequested, schedulePendingAfterFailure: true });
+    }
+  }
+
   /** Retries only persisted skipped paths through the normal incremental pipeline. */
   async retrySkippedDocuments(): Promise<void> {
     if (this.retryingSkippedDocuments || !this.index.skippedDocuments.length) return;
@@ -198,7 +290,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     let patchSucceeded = false;
     let refreshQuery = false;
     try {
-      if (this.isBuildActive()) throw new Error("索引正在更新，完成后再重试未索引文档");
+      if (this.isAnyIndexUpdateActive()) throw new Error("索引正在更新，完成后再重试未索引文档");
       const scope = this.index.scope;
       if (!scope) throw new Error("当前索引不可用于增量重试，请先全量重建");
       this.retryingSkippedDocuments = true;
@@ -221,7 +313,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   /** Removes only the durable data for this vault, then makes queries visibly uninitialized. */
   async clearLocalIndex(): Promise<void> {
-    if (this.isBuildActive()) throw new Error("索引正在更新，完成或取消后再清除本地索引");
+    if (this.isAnyIndexUpdateActive()) throw new Error("索引正在更新，完成或取消后再清除本地索引");
     await this.requireIndexStore().clear();
     this.buildCancellation.assertPluginActive();
     this.index = new PersistentIndex(this.indexIdentity(), undefined, this.desiredIndexScope());
@@ -246,6 +338,10 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   private isBuildActive(): boolean {
     return this.preparingIndex || this.indexing || this.committingIndex || this.flushingFileUpdates;
+  }
+
+  private isAnyIndexUpdateActive(): boolean {
+    return this.isBuildActive() || this.applyingIndexScope;
   }
 
   private provider(): OllamaEmbeddingProvider {
@@ -377,7 +473,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     // Recovery/defer state only suppresses immediate work or a repeat modal;
     // it must never make a vault event disappear.
     if (this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred) return;
-    if (this.isBuildActive()) {
+    if (this.isAnyIndexUpdateActive()) {
       return;
     }
     if (!this.index.isReady(this.indexIdentity())) return;
@@ -392,7 +488,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   /** Layout-ready startup check compares path/stat metadata only, never every note body. */
   private async reconcileIndexAfterLayout(): Promise<void> {
-    if (!this.buildCancellation.isPluginActive || !this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred || this.isBuildActive()) return;
+    if (!this.buildCancellation.isPluginActive || !this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred || this.isAnyIndexUpdateActive()) return;
     const scope = this.index.scope;
     if (!scope) return;
     try {
@@ -416,7 +512,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   private async flushFileUpdates(): Promise<void> {
     this.updateTimer = undefined;
-    if (!this.buildCancellation.isPluginActive || this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.flushingFileUpdates || this.isBuildActive() || !this.index.isReady(this.indexIdentity())) return;
+    if (!this.buildCancellation.isPluginActive || this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.flushingFileUpdates || this.isAnyIndexUpdateActive() || !this.index.isReady(this.indexIdentity())) return;
     const changes = this.pendingVaultChanges.take();
     if (!changes.length) return;
     const effectiveScope = this.index.scope;
@@ -511,7 +607,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   /** Scans a full build into an opaque plan without embedding or committing. */
   async prepareIndexBuild(): Promise<PreparedIndexBuild> {
-    if (this.isBuildActive()) throw new Error("An index build is already active");
+    if (this.isAnyIndexUpdateActive()) throw new Error("An index build is already active");
     const identity = this.indexIdentity();
     const scope = this.desiredIndexScope();
     const vaultRevision = this.vaultRevision.value;
@@ -570,7 +666,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   /** Executes a previously prepared plan; the plan module rejects stale input before embedding. */
   async executePreparedIndexBuild(plan: PreparedIndexBuild): Promise<void> {
-    if (this.isBuildActive()) throw new Error("An index build is already active");
+    if (this.isAnyIndexUpdateActive()) throw new Error("An index build is already active");
     const current = { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.desiredIndexScope() };
     // Validate before changing build state or constructing an embedding request.
     assertIndexBuildPlanCurrent(plan, current);
@@ -706,6 +802,16 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     }
     const activePath = this.latestMarkdownView?.file?.path;
     return [...plan.upsertPaths, ...plan.deletes].some((path) => path !== activePath);
+  }
+
+  /** Rejects a scope patch if its vault, desired/effective scope, or identity moved after preparation. */
+  private assertScopeTransitionCurrent(effectiveScope: IndexScope, desiredScope: IndexScope, revision: number): void {
+    this.buildCancellation.assertPluginActive();
+    if (this.vaultRevision.value !== revision || !this.index.isReady(this.indexIdentity()) ||
+      !sameIdentity(this.index.identity, this.indexIdentity()) || !sameIndexScope(this.index.scope ?? indexScope([]), effectiveScope) ||
+      !sameIndexScope(this.desiredIndexScope(), desiredScope)) {
+      throw new Error("Prepared index scope update is stale; apply it again");
+    }
   }
 
   private incrementalChangeSummary(changes: readonly VaultChange[], upserts: readonly string[], deletes: readonly string[]): IncrementalChangeSummary {

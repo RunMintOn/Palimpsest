@@ -97,6 +97,7 @@ const settingsPages: readonly { id: SettingsPage; label: string }[] = [
 
 export class SideGrepSettingTab extends PluginSettingTab {
   private scopeSaving = false;
+  private scopeApplying = false;
   private fullBuildRequesting = false;
   private readonly resettingSections = new Set<SettingsResetSection>();
   private readonly resetControlEls = new Map<SettingsResetSection, HTMLElement>();
@@ -284,7 +285,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
 
   private indexScopeSettings(): void {
     this.heading("索引范围", "scope");
-    this.containerEl.createEl("p", { text: "以下目录不会参与全文索引。修改会立即保存，但需要完成一次全量重建后才会应用到当前索引。" });
+    this.containerEl.createEl("p", { text: "以下目录是期望的索引范围。修改会立即保存；当前搜索继续使用上次生效的范围，直到应用范围变化或全量重建成功。" });
     this.indexScopeStatus();
 
     const excludedDirectories = this.plugin.settings.excludedDirectories;
@@ -298,7 +299,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
       .setName("添加排除目录")
       .addButton((button) => button
         .setButtonText("选择目录")
-        .setDisabled(this.scopeSaving || this.resettingSections.has("scope"))
+        .setDisabled(this.isScopeBusy())
         .onClick(() => this.openDirectoryPicker()));
   }
 
@@ -313,9 +314,31 @@ export class SideGrepSettingTab extends PluginSettingTab {
       return;
     }
     this.containerEl.createEl("p", { text: "索引范围设置已保存，但尚未应用。" });
-    this.containerEl.createEl("p", { text: "当前搜索仍继续使用上次构建时的范围；完成全量重建后，新范围才会生效。" });
+    this.containerEl.createEl("p", { text: "当前搜索继续使用上次生效的范围。" });
     this.containerEl.createEl("p", { text: `当前生效：${this.scopeLabel(scope.effective?.excludedDirectories ?? [])}` });
     this.containerEl.createEl("p", { text: `准备应用：${this.scopeLabel(scope.desired.excludedDirectories)}` });
+    const application = this.plugin.getIndexScopeApplicationUi();
+    if (application.available || application.applying || this.scopeApplying) {
+      new Setting(this.containerEl)
+        .setName("应用索引范围变化")
+        .setDesc("只补充新纳入目录的文档，并删除新排除目录的记录。")
+        .addButton((button) => button
+          .setButtonText(application.applying || this.scopeApplying ? "正在应用…" : "应用索引范围变化")
+          .setCta()
+          .setDisabled(!application.available || application.applying || this.scopeApplying)
+          .onClick(async () => {
+            if (!this.plugin.getIndexScopeApplicationUi().available || this.scopeApplying) return;
+            this.scopeApplying = true;
+            button.setButtonText("正在应用…");
+            button.setDisabled(true);
+            try {
+              await this.plugin.applyIndexScopeChanges();
+            } finally {
+              this.scopeApplying = false;
+              this.display();
+            }
+          }));
+    }
   }
 
   private excludedDirectorySetting(directory: string): void {
@@ -325,14 +348,14 @@ export class SideGrepSettingTab extends PluginSettingTab {
     setting.addExtraButton((button) => button
       .setIcon("trash")
       .setTooltip("删除排除目录")
-      .setDisabled(this.scopeSaving || this.resettingSections.has("scope"))
+      .setDisabled(this.isScopeBusy())
       .onClick(() => void this.saveExcludedDirectories(
         this.plugin.settings.excludedDirectories.filter((excluded) => excluded !== directory)
       )));
   }
 
   private openDirectoryPicker(): void {
-    if (this.scopeSaving || this.resettingSections.has("scope")) return;
+    if (this.isScopeBusy()) return;
     const folders = this.app.vault.getAllFolders(false);
     const eligiblePaths = new Set(filterExcludedDirectoryCandidates(
       folders.filter((folder) => !folder.isRoot()).map((folder) => folder.path),
@@ -345,7 +368,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
   }
 
   private async saveExcludedDirectories(excludedDirectories: string[]): Promise<void> {
-    if (this.scopeSaving) return;
+    if (this.scopeSaving || this.scopeApplying || this.plugin.getIndexScopeApplicationUi().applying) return;
     const previous = this.plugin.settings.excludedDirectories;
     this.scopeSaving = true;
     this.plugin.settings.excludedDirectories = excludedDirectories;
@@ -364,6 +387,10 @@ export class SideGrepSettingTab extends PluginSettingTab {
 
   private scopeLabel(directories: readonly string[]): string {
     return directories.length ? directories.join("、") : "未排除目录";
+  }
+
+  private isScopeBusy(): boolean {
+    return this.scopeSaving || this.scopeApplying || this.plugin.getIndexScopeApplicationUi().applying || this.resettingSections.has("scope");
   }
 
   private async restoreDefaultSection(section: SettingsResetSection): Promise<void> {

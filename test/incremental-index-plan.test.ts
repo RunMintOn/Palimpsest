@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "../src/incremental-index-plan";
 import { indexScope } from "../src/index-scope";
+import { planIndexScopeTransition } from "../src/index-scope-transition";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk } from "../src/types";
 
 const identity: IndexIdentity = { model: "test", dimensions: 3, chunkerVersion: CHUNKER_VERSION, chunkTargetLength: 10, chunkMaxLength: 20, chunkMinLength: 1 };
@@ -43,6 +44,60 @@ test("a pure move of more than 50 documents is fully reusable and does not requi
   });
   assert.equal(plan.summary.pendingChunks, 0);
   assert.equal(isLargeIncrementalIndexPlan(plan.summary), false);
+});
+
+test("a scope addition plans only newly admitted paths and reuses compatible vectors without Ollama", async () => {
+  const transition = planIndexScopeTransition({
+    effectiveScope: indexScope(["BatchB"]),
+    desiredScope: indexScope([]),
+    markdownPaths: ["BatchA/note.md", "BatchB/note.md"],
+    indexedDocumentPaths: ["BatchA/note.md"]
+  });
+  assert.deepEqual(transition.upsertPaths, ["BatchB/note.md"]);
+  const plan = prepareIncrementalIndexPlan({
+    documents: transition.upsertPaths.map((path) => document(path)),
+    deletes: transition.deletePaths,
+    reusableChunks: [indexed(chunk("BatchA/note.md"))],
+    current,
+    changes: { added: 1, renamed: 0, modified: 0, deleted: 0 }
+  });
+  let embeddingCalls = 0;
+  const executed = await executeIncrementalIndexPlan(plan, {
+    current,
+    batchSize: 1,
+    embedDocuments: async () => { embeddingCalls++; return []; },
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.equal(embeddingCalls, 0);
+  assert.deepEqual(executed.upserts.map((item) => item.filePath), ["BatchB/note.md"]);
+});
+
+test("a scope removal executes a delete-only patch without requesting Ollama", async () => {
+  const transition = planIndexScopeTransition({
+    effectiveScope: indexScope([]),
+    desiredScope: indexScope(["BatchB"]),
+    markdownPaths: ["BatchA/note.md", "BatchB/indexed.md"],
+    indexedDocumentPaths: ["BatchA/note.md", "BatchB/indexed.md", "BatchB/skipped.md"]
+  });
+  const desiredCurrent = { ...current, scope: indexScope(["BatchB"]) };
+  const plan = prepareIncrementalIndexPlan({
+    documents: [],
+    deletes: transition.deletePaths,
+    reusableChunks: [],
+    current: desiredCurrent,
+    changes: { added: 0, renamed: 0, modified: 0, deleted: 2 }
+  });
+  let embeddingCalls = 0;
+  const executed = await executeIncrementalIndexPlan(plan, {
+    current: desiredCurrent,
+    batchSize: 1,
+    embedDocuments: async () => { embeddingCalls++; return []; },
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined
+  });
+  assert.equal(embeddingCalls, 0);
+  assert.deepEqual(executed.deletes, ["BatchB/indexed.md", "BatchB/skipped.md"]);
 });
 
 test("pending embeddings over the document or chunk threshold require confirmation", () => {

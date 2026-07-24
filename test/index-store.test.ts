@@ -361,6 +361,97 @@ test("patch-documents changes only its specified document", async () => {
   }
 });
 
+test("a scope-targeted document patch commits documents and the effective scope together", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("kept.md", "kept"), document("removed.md", "removed")]);
+    const targetScope = indexScope(["Excluded"]);
+    const committed = await store.commit({
+      kind: "patch-documents",
+      identity,
+      upserts: [document("included.md", "included")],
+      deletes: ["removed.md"],
+      targetScope
+    });
+    assert.deepEqual(committed.scope, targetScope);
+    assert.deepEqual((committed.documents ?? []).map((item) => item.filePath).sort(), ["included.md", "kept.md"]);
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.scope, targetScope);
+    assert.deepEqual((loaded.data.documents ?? []).map((item) => item.filePath).sort(), ["included.md", "kept.md"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("a scope-targeted empty patch updates only the effective scope", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("stable.md", "stable")]);
+    const targetScope = indexScope(["Empty"]);
+    await store.commit({ kind: "patch-documents", identity, upserts: [], deletes: [], targetScope });
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.scope, targetScope);
+    assert.deepEqual(loaded.data.chunks.map((chunk) => chunk.filePath), ["stable.md"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("an invalid scope-targeted patch leaves both documents and scope unchanged", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("stable.md", "stable")]);
+    await assert.rejects(() => store.commit({
+      kind: "patch-documents",
+      identity,
+      upserts: [document("invalid.md", "invalid", [1, Number.NaN, 3])],
+      deletes: ["stable.md"],
+      targetScope: indexScope(["New"])
+    }), /non-finite/);
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.scope, indexScope(["Archive"]));
+    assert.deepEqual(loaded.data.chunks.map((chunk) => chunk.filePath), ["stable.md"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("a scope-targeted patch rejects a non-canonical scope without changing either side", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("stable.md", "stable")]);
+    await assert.rejects(() => store.commit({
+      kind: "patch-documents",
+      identity,
+      upserts: [],
+      deletes: ["stable.md"],
+      targetScope: { excludedDirectories: [" New/"] }
+    }), /scope must be normalized/);
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.scope, indexScope(["Archive"]));
+    assert.deepEqual(loaded.data.chunks.map((chunk) => chunk.filePath), ["stable.md"]);
+  } finally {
+    store.close();
+  }
+});
+
+test("an ordinary document patch retains the effective scope", async () => {
+  const store = createIndexStore(vaultA);
+  try {
+    await replace(store, [document("stable.md", "stable")]);
+    await store.commit({ kind: "patch-documents", identity, upserts: [document("stable.md", "changed")], deletes: [] });
+    const loaded = await store.load();
+    assert.equal(loaded.status, "ready");
+    assert.deepEqual(loaded.data.scope, indexScope(["Archive"]));
+  } finally {
+    store.close();
+  }
+});
+
 test("patch-documents atomically updates, deletes, and inserts documents", async () => {
   const store = createIndexStore(vaultA);
   try {

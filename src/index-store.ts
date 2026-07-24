@@ -80,6 +80,8 @@ export type IndexCommit =
       identity: IndexIdentity;
       upserts: readonly IndexDocument[];
       deletes: readonly string[];
+      /** When present, publish this normalized effective scope with the document patch. */
+      targetScope?: IndexScope;
     };
 
 export type IndexLoadResult =
@@ -226,6 +228,7 @@ class IndexedDbIndexStore implements IndexStore {
 
   private async patchDocuments(change: Extract<IndexCommit, { kind: "patch-documents" }>): Promise<PersistentIndexData> {
     const identity = validateIdentity(change.identity);
+    const targetScope = change.targetScope === undefined ? undefined : validateScope(change.targetScope);
     const upserts = normalizeDocuments(change.upserts, identity);
     validateDeletes(change.deletes, upserts);
     const database = await this.open();
@@ -255,6 +258,7 @@ class IndexedDbIndexStore implements IndexStore {
       const updatedAt = Date.now();
       const updatedMetadata: StoredIndexMetadata = {
         ...metadata,
+        ...(targetScope ? { scope: targetScope } : {}),
         documentCount: resulting.length,
         chunkCount: countChunks(resulting),
         updatedAt
