@@ -619,9 +619,12 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
       ...options
     });
-    if (actions.refreshQuery && this.automaticWork.allowed && !this.automaticWork.isResuming) this.refreshCurrentQuery();
+    // A visibility resume that was blocked by this update owns its subsequent
+    // reconciliation/flush/query sequence. Ordinary updates retain the
+    // existing refreshRequested behavior.
+    const completion = this.automaticWork.indexUpdateCompleted(this.automaticActions());
+    if (actions.refreshQuery && this.automaticWork.allowed && !completion.recoveryOwnsQuery) this.refreshCurrentQuery();
     if (actions.schedulePending) this.schedulePendingFileUpdates();
-    this.automaticWork.indexUpdateCompleted(this.automaticActions());
   }
 
   /** The only production full-build request path: scan, confirm, then execute. */
@@ -648,9 +651,18 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         confirm: (plan) => confirmIndexBuild(this.app, plan.summary, hadUsableIndex),
         execute: (plan) => this.executePreparedIndexBuild(plan)
       });
-      if (outcome === "cancelled") this.restoreAfterFullBuildPause();
+      if (outcome === "cancelled") {
+        this.restoreAfterFullBuildPause();
+        this.automaticWork.fullBuildCompleted(this.automaticActions());
+      } else {
+        this.finishSuccessfulFullBuild();
+      }
     } catch (error) {
       this.presentBuildFailure(error, hadUsableIndex);
+      // A failed/cancelled full build may have been the active update blocking
+      // a visibility resume. Always consume that one-shot wait so a later,
+      // unrelated incremental patch cannot revive it.
+      this.automaticWork.fullBuildCompleted(this.automaticActions());
     } finally {
       // A failed/cancelled full build must leave captured vault events
       // recoverable; a successful build has already discarded only events its
@@ -773,17 +785,21 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.fallbackGenerationInUse = false;
       this.syncQueryAvailability();
       this.present({ kind: "complete", message: `索引完成：${chunkCount} 个片段；${executed.skippedDocuments.length} 篇笔记未索引` }, this.results);
-      // Settings may have changed after execution began. In that case the
-      // committed plan remains valid but query readiness follows new settings.
+      // The request-level completion path decides whether normal indexReady
+      // querying or a blocked visibility resume owns the next query.
       this.indexing = false;
-      if (this.index.isReady(this.indexIdentity())) {
-        const schedule = this.lifecycle.indexReady();
-        if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
-      }
     } finally {
       if (buildToken) this.buildCancellation.finishBuild(buildToken);
       this.indexing = false;
     }
+  }
+
+  /** Full builds are manual, but a resume blocked by one owns the next automatic query. */
+  private finishSuccessfulFullBuild(): void {
+    const completion = this.automaticWork.fullBuildCompleted(this.automaticActions());
+    if (completion.recoveryOwnsQuery || !this.index.isReady(this.indexIdentity())) return;
+    const schedule = this.lifecycle.indexReady();
+    if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
   }
 
   private presentBuildFailure(error: unknown, hadUsableIndex: boolean): void {

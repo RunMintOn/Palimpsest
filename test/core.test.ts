@@ -272,6 +272,65 @@ test("automatic work runs reconciliation then queued flush then one query", asyn
   assert.deepEqual(log, ["reconcile", "flush", "query"]);
 });
 
+test("automatic work with queued changes and no reconciliation runs flush then exactly one query", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  let pending = true;
+  const { actions, log } = automaticActions({
+    hasPendingChanges: () => pending,
+    flush: async () => { log.push("flush"); pending = false; }
+  });
+  automatic.visibilityChanged({}, true, actions);
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["flush", "query"]);
+});
+
+test("a resume-owned flush completion leaves its single query to the resume", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  let pending = true;
+  const { actions, log } = automaticActions({
+    hasPendingChanges: () => pending,
+    query: () => { log.push("resume-query"); }
+  });
+  actions.flush = async () => {
+    log.push("flush");
+    pending = false;
+    const completion = automatic.indexUpdateCompleted(actions);
+    assert.equal(completion.recoveryOwnsQuery, true);
+    // This is the only main.ts branch relevant here: an unowned completion
+    // requests its ordinary refresh.
+    if (!completion.recoveryOwnsQuery) log.push("ordinary-refresh");
+  };
+
+  automatic.visibilityChanged({}, true, actions);
+  await automatic.resume(actions);
+  // Give a mistakenly scheduled deferred resume a chance to run.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(log, ["flush", "resume-query"]);
+});
+
+test("an external update completion retains the ordinary refresh owner", () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const { actions, log } = automaticActions();
+  const completion = automatic.indexUpdateCompleted(actions);
+
+  assert.equal(completion.recoveryOwnsQuery, false);
+  if (!completion.recoveryOwnsQuery) log.push("ordinary-refresh");
+  assert.deepEqual(log, ["ordinary-refresh"]);
+});
+
+test("a failed resume-owned flush clears its completion ownership", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const { actions } = automaticActions({ hasPendingChanges: () => true });
+  actions.flush = async () => { throw new Error("flush failed"); };
+
+  automatic.visibilityChanged({}, true, actions);
+  await assert.rejects(automatic.resume(actions), /flush failed/);
+
+  assert.deepEqual(automatic.indexUpdateCompleted(actions), { recoveryOwnsQuery: false });
+});
+
 test("automatic work skips flush/query after hiding during reconciliation and invalidates old query work", async () => {
   const automatic = new AutomaticWorkCoordinator<object>();
   const view = {};
@@ -294,6 +353,32 @@ test("automatic work skips flush/query after hiding during reconciliation and in
   assert.deepEqual(log, ["reconcile", "suspend"]);
 });
 
+test("automatic work stops after a hidden flush and resumes cleanly when visible again", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const view = {};
+  let pending = true;
+  let release: () => void = () => undefined;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const { actions, log } = automaticActions({
+    hasPendingChanges: () => pending
+  });
+  actions.flush = async () => {
+    log.push("flush");
+    await wait;
+    pending = false;
+    assert.equal(automatic.indexUpdateCompleted(actions).recoveryOwnsQuery, true);
+  };
+  automatic.visibilityChanged(view, true, actions);
+  await Promise.resolve();
+  automatic.visibilityChanged(view, false, actions);
+  release();
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["flush", "suspend"]);
+  automatic.visibilityChanged(view, true, actions);
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["flush", "suspend", "query"]);
+});
+
 test("automatic work deduplicates simultaneous resumes and retries after an active index update", async () => {
   const automatic = new AutomaticWorkCoordinator<object>();
   let active = true;
@@ -306,6 +391,83 @@ test("automatic work deduplicates simultaneous resumes and retries after an acti
   automatic.indexUpdateCompleted(actions);
   await automatic.resume(actions);
   assert.deepEqual(log, ["query"]);
+});
+
+test("a completion consumed by a waiting resume owns refresh and flushes before one query", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const view = {};
+  let active = true;
+  let pending = true;
+  const { actions, log } = automaticActions({
+    isIndexUpdateActive: () => active,
+    hasPendingChanges: () => pending,
+    flush: async () => { log.push("flush"); pending = false; }
+  });
+  automatic.visibilityChanged(view, true, actions);
+  await automatic.resume(actions);
+  active = false;
+  const completion = automatic.indexUpdateCompleted(actions);
+  assert.equal(completion.recoveryOwnsQuery, true);
+  // This mirrors main.ts: a refreshRequested completion must defer to the
+  // recovery flow when that flow explicitly owns the next query.
+  if (!completion.recoveryOwnsQuery) actions.query();
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["flush", "query"]);
+  assert.deepEqual(automatic.indexUpdateCompleted(actions), { recoveryOwnsQuery: false });
+  assert.deepEqual(log, ["flush", "query"], "repeat completion cannot query again");
+});
+
+test("an immediately reported active completion is not swallowed by the ending resume promise", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  let active = true;
+  const { actions, log } = automaticActions({ isIndexUpdateActive: () => active });
+  automatic.visibilityChanged({}, true, actions);
+  // runResume records the active wait synchronously before its Promise settles.
+  active = false;
+  assert.equal(automatic.indexUpdateCompleted(actions).recoveryOwnsQuery, true);
+  await Promise.resolve();
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["query"]);
+});
+
+test("an immediately reported hidden full-build completion defers its recovery query until visible", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const view = {};
+  let active = true;
+  const { actions, log } = automaticActions({ isIndexUpdateActive: () => active });
+  automatic.visibilityChanged(view, true, actions);
+  automatic.visibilityChanged(view, false, actions);
+  active = false;
+  assert.equal(automatic.fullBuildCompleted(actions).recoveryOwnsQuery, true);
+  await Promise.resolve();
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["suspend"]);
+  automatic.visibilityChanged(view, true, actions);
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["suspend", "query"]);
+});
+
+test("full-build success, failure, and cancellation each consume waiting recovery without stale later triggers", async () => {
+  for (const terminalState of ["success", "failure", "cancelled"]) {
+    const automatic = new AutomaticWorkCoordinator<object>();
+    const view = {};
+    let fullBuildActive = true;
+    let cancelled = false;
+    const { actions, log } = automaticActions({
+      isIndexUpdateActive: () => fullBuildActive,
+      suspend: () => { log.push("suspend"); cancelled = false; }
+    });
+    automatic.visibilityChanged(view, true, actions);
+    await automatic.resume(actions);
+    automatic.visibilityChanged(view, false, actions);
+    assert.equal(cancelled, false, `${terminalState}: visibility never cancels a user-started full build`);
+    fullBuildActive = false;
+    assert.equal(automatic.fullBuildCompleted(actions).recoveryOwnsQuery, true, terminalState);
+    assert.deepEqual(automatic.fullBuildCompleted(actions), { recoveryOwnsQuery: false }, `${terminalState}: no stale wait remains`);
+    automatic.visibilityChanged(view, true, actions);
+    await automatic.resume(actions);
+    assert.deepEqual(log, ["suspend", "query"], terminalState);
+  }
 });
 
 test("cosine, ordering, per-file cap, exclusion, and duplicate removal", () => {
