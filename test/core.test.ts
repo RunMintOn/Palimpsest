@@ -11,7 +11,7 @@ import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, execute
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
 import { PersistentIndex } from "../src/persistent-index";
 import { planIndexReconciliation } from "../src/index-reconciliation";
-import { AutomaticWorkCoordinator } from "../src/automatic-work";
+import { AutomaticWorkActions, AutomaticWorkCoordinator } from "../src/automatic-work";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
 import { isValidQueryText, QuerySourceCoordinator } from "../src/query-source";
@@ -163,7 +163,7 @@ test("selection button distinguishes one-shot, short selection, and follow mode"
   assert.equal(source.isFollowingSelection, false);
 });
 
-test("follow selection waits for valid text and preserves mode across a document change", () => {
+test("follow selection waits for valid text and stays active until explicitly disabled", () => {
   const source = new QuerySourceCoordinator();
   source.selectionButton("");
   assert.equal(source.sourceForCurrentSelection("全文内容足够长", ""), undefined);
@@ -171,34 +171,141 @@ test("follow selection waits for valid text and preserves mode across a document
   assert.deepEqual(source.sourceForCurrentSelection("全文内容足够长", "新的有效选区内容"), {
     kind: "selection-follow", text: "新的有效选区内容"
   });
-  source.documentChanged();
   assert.equal(source.isFollowingSelection, true);
   assert.equal(source.presentation("新的有效选区内容").kind, "following");
 });
 
-test("query source labels restore whole-note scope after a normal edit", () => {
+test("adopting a document source clears a completed one-shot scope without changing follow mode", () => {
   const source = new QuerySourceCoordinator();
-  source.selectionButton("足够长的选区文本用于单次查询");
+  const oneShot = source.selectionButton("足够长的选区文本用于单次查询");
+  assert.equal(oneShot.kind, "one-shot");
+  if (oneShot.kind === "one-shot") source.adopt(oneShot.source);
   assert.equal(source.presentation("").kind, "once");
-  source.documentChanged();
+  assert.deepEqual(source.sourceForCurrentSelection("仅计算的全文候选", ""), { kind: "document", text: "仅计算的全文候选" });
+  assert.equal(source.presentation("").kind, "once", "candidate lookup has no range-label side effect");
+  source.adopt({ kind: "document", text: "切换笔记后的完整正文" });
   assert.deepEqual(source.presentation(""), {
     kind: "document", text: "查询范围：当前笔记", tooltip: "开启跟随选区查询"
   });
+
+  source.selectionButton("");
+  source.adopt({ kind: "document", text: "跟随模式中的候选全文不应关闭模式" });
+  assert.equal(source.isFollowingSelection, true);
+  assert.equal(source.presentation("").kind, "waiting");
 });
 
-test("automatic work requires one visible view and visibility changes are idempotent", () => {
+test("one-shot document adoption covers file-switch and refresh semantics", () => {
+  const source = new QuerySourceCoordinator();
+  const beginOneShot = () => {
+    const action = source.selectionButton("足够长的选区文本用于单次查询");
+    assert.equal(action.kind, "one-shot");
+    if (action.kind === "one-shot") source.adopt(action.source);
+  };
+  beginOneShot();
+  source.adopt({ kind: "document", text: "另一篇笔记的完整 buffer" });
+  assert.equal(source.presentation("").kind, "document", "file switch schedules document source");
+  beginOneShot();
+  source.adopt({ kind: "document", text: "刷新当前笔记的完整 buffer" });
+  assert.equal(source.presentation("").kind, "document", "refresh schedules document source");
+});
+
+test("follow selection presentation distinguishes no, whitespace, short, and valid selections", () => {
+  const source = new QuerySourceCoordinator();
+  source.selectionButton("");
+  assert.equal(source.presentation("").text, "查询模式：跟随选区 · 等待选择");
+  assert.equal(source.presentation("   \n").text, "查询模式：跟随选区 · 至少选择 8 个非空白字符");
+  assert.equal(source.presentation("短选区").text, "查询模式：跟随选区 · 至少选择 8 个非空白字符");
+  assert.equal(source.presentation("足够长的有效选区文本").text, "查询模式：跟随选区");
+  assert.equal(source.presentation("短选区").tooltip, "关闭跟随选区查询");
+});
+
+function automaticActions(overrides: Partial<AutomaticWorkActions> = {}): { actions: AutomaticWorkActions; log: string[] } {
+  const log: string[] = [];
+  return {
+    log,
+    actions: {
+      suspend: () => { log.push("suspend"); },
+      needsReconciliation: () => false,
+      reconcile: async () => { log.push("reconcile"); },
+      hasPendingChanges: () => false,
+      isIndexUpdateActive: () => false,
+      flush: async () => { log.push("flush"); },
+      query: () => { log.push("query"); },
+      ...overrides
+    }
+  };
+}
+
+test("automatic work visibility suspends once at the final hidden view and keeps one visible view allowed", async () => {
   const automatic = new AutomaticWorkCoordinator<object>();
   const first = {};
   const second = {};
+  const { actions, log } = automaticActions();
   assert.equal(automatic.allowed, false);
-  assert.equal(automatic.setVisible(first, false), false);
-  assert.equal(automatic.setVisible(first, true), true);
-  assert.equal(automatic.setVisible(first, true), false);
-  assert.equal(automatic.setVisible(second, true), false);
-  assert.equal(automatic.setVisible(first, false), false);
+  await automatic.resume(actions);
+  assert.deepEqual(log, [], "no visible view cannot start automatic work");
+  assert.equal(automatic.visibilityChanged(first, false, actions), "none");
+  assert.equal(automatic.visibilityChanged(first, true, actions), "resume");
+  await automatic.resume(actions);
+  assert.equal(automatic.visibilityChanged(first, true, actions), "none");
+  assert.equal(automatic.visibilityChanged(second, true, actions), "none");
+  assert.equal(automatic.visibilityChanged(first, false, actions), "none");
   assert.equal(automatic.allowed, true);
-  assert.equal(automatic.remove(second), true);
+  assert.equal(automatic.visibilityChanged(second, false, actions), "suspend");
+  assert.equal(automatic.visibilityChanged(second, false, actions), "none");
   assert.equal(automatic.allowed, false);
+  assert.deepEqual(log, ["query", "suspend"]);
+});
+
+test("automatic work runs reconciliation then queued flush then one query", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  let reconciliation = true;
+  let pending = false;
+  const { actions, log } = automaticActions({
+    needsReconciliation: () => reconciliation,
+    reconcile: async () => { log.push("reconcile"); reconciliation = false; pending = true; },
+    hasPendingChanges: () => pending,
+    flush: async () => { log.push("flush"); pending = false; }
+  });
+  automatic.visibilityChanged({}, true, actions);
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["reconcile", "flush", "query"]);
+});
+
+test("automatic work skips flush/query after hiding during reconciliation and invalidates old query work", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const view = {};
+  const gate = new QueryGate();
+  const old = gate.begin();
+  let release: () => void = () => undefined;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  const { actions, log } = automaticActions({
+    suspend: () => { log.push("suspend"); gate.invalidate(); },
+    needsReconciliation: () => true,
+    reconcile: async () => { log.push("reconcile"); await wait; },
+    hasPendingChanges: () => true
+  });
+  automatic.visibilityChanged(view, true, actions);
+  await Promise.resolve();
+  automatic.visibilityChanged(view, false, actions);
+  release();
+  await automatic.resume(actions);
+  assert.equal(gate.isCurrent(old), false);
+  assert.deepEqual(log, ["reconcile", "suspend"]);
+});
+
+test("automatic work deduplicates simultaneous resumes and retries after an active index update", async () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  let active = true;
+  const { actions, log } = automaticActions({ isIndexUpdateActive: () => active });
+  const view = {};
+  automatic.visibilityChanged(view, true, actions);
+  await Promise.all([automatic.resume(actions), automatic.resume(actions)]);
+  assert.deepEqual(log, []);
+  active = false;
+  automatic.indexUpdateCompleted(actions);
+  await automatic.resume(actions);
+  assert.deepEqual(log, ["query"]);
 });
 
 test("cosine, ordering, per-file cap, exclusion, and duplicate removal", () => {
@@ -294,10 +401,10 @@ test("result excerpt density uses relative typography and removes the clamp for 
     fontSize: "0.92em", lineHeight: "1.48", maxHeight: undefined
   });
   assert.equal(resultExcerptStyle({ ...presentation, maxLines: 0 }, false).maxHeight, undefined);
-  assert.deepEqual(excerptExpansionControl(10, false, false), { expandable: false, label: "展开全文" });
-  assert.deepEqual(excerptExpansionControl(10, true, false), { expandable: true, label: "展开全文" });
-  assert.deepEqual(excerptExpansionControl(10, true, true), { expandable: true, label: "收起全文" });
-  assert.deepEqual(excerptExpansionControl(0, true, false), { expandable: false, label: "展开全文" });
+  assert.deepEqual(excerptExpansionControl(10, false, false), { expandable: false, expanded: false, label: "展开全文" });
+  assert.deepEqual(excerptExpansionControl(10, true, false), { expandable: true, expanded: false, label: "展开全文" });
+  assert.deepEqual(excerptExpansionControl(10, true, true), { expandable: true, expanded: true, label: "收起全文" });
+  assert.deepEqual(excerptExpansionControl(0, true, true), { expandable: false, expanded: false, label: "展开全文" });
 });
 
 test("index scope normalizes multiline paths, separators, empty entries, duplicates, and order", () => {

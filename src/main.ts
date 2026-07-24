@@ -20,7 +20,7 @@ import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-da
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded, sameIndexScope } from "./index-scope";
 import { canApplyIndexScopeChange, shouldRefreshAfterIndexScopeChange } from "./index-scope-application";
 import { planIndexScopeTransition } from "./index-scope-transition";
-import { AutomaticWorkCoordinator } from "./automatic-work";
+import { AutomaticWorkActions, AutomaticWorkCoordinator } from "./automatic-work";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
@@ -71,7 +71,6 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   /** A user-requested scope patch keeps ordinary vault events queued until it finishes. */
   private applyingIndexScope = false;
   private reconciliationPending = true;
-  private resumingAutomaticWork = false;
 
   async onload(): Promise<void> {
     let saved: unknown;
@@ -125,7 +124,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         this.lifecycle.rememberMarkdownContext();
       }
       this.lifecycle.layoutReady();
-      void this.resumeAutomaticWork();
+      void this.automaticWork.resume(this.automaticActions());
     });
   }
 
@@ -380,7 +379,6 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     if (!(view instanceof MarkdownView)) return;
     this.latestMarkdownView = view;
     this.lifecycle.rememberMarkdownContext();
-    this.querySource.documentChanged();
     // Follow-selection mode deliberately ignores ordinary document edits.
     if (this.querySource.isFollowingSelection) {
       this.clearQueryTimers();
@@ -450,6 +448,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private scheduleResolvedQuery(schedule: QuerySchedule, source: QuerySource, editor: Editor, view: MarkdownView): void {
+    this.querySource.adopt(source);
     this.clearQueryTimers();
     const generation = this.queryGate.begin();
     const buffer = editor.getValue();
@@ -620,8 +619,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
       ...options
     });
-    if (actions.refreshQuery && this.automaticWork.allowed && !this.resumingAutomaticWork) this.refreshCurrentQuery();
+    if (actions.refreshQuery && this.automaticWork.allowed && !this.automaticWork.isResuming) this.refreshCurrentQuery();
     if (actions.schedulePending) this.schedulePendingFileUpdates();
+    this.automaticWork.indexUpdateCompleted(this.automaticActions());
   }
 
   /** The only production full-build request path: scan, confirm, then execute. */
@@ -1011,37 +1011,33 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   sidebarVisibilityChanged(view: SideGrepView, visible: boolean): void {
-    const changed = this.automaticWork.setVisible(view, visible);
-    if (!changed) return;
-    if (!this.automaticWork.allowed) {
-      this.clearQueryTimers();
-      this.queryGate.invalidate();
-      if (this.updateTimer !== undefined) window.clearTimeout(this.updateTimer);
-      this.updateTimer = undefined;
-      return;
-    }
-    void this.resumeAutomaticWork();
+    this.automaticWork.visibilityChanged(view, visible, this.automaticActions());
   }
 
-  /** Resume reconciliation, then queued incremental work, then exactly one current-source query. */
-  private async resumeAutomaticWork(): Promise<void> {
-    if (!this.automaticWork.allowed || this.resumingAutomaticWork) return;
-    this.resumingAutomaticWork = true;
-    try {
-      if (this.reconciliationPending) {
+  /** Adapter between the pure visibility runner and Obsidian/index effects. */
+  private automaticActions(): AutomaticWorkActions {
+    return {
+      suspend: () => {
+        this.clearQueryTimers();
+        this.queryGate.invalidate();
+        if (this.updateTimer !== undefined) window.clearTimeout(this.updateTimer);
+        this.updateTimer = undefined;
+      },
+      needsReconciliation: () => this.reconciliationPending,
+      reconcile: async () => {
         const reconciled = await this.reconcileIndexAfterLayout();
-        // A not-ready index has nothing to reconcile; future index completion
-        // will query normally and a plugin restart will request reconciliation.
+        // A not-ready index has nothing to reconcile; index completion retains
+        // the normal lifecycle path and a plugin restart checks again.
         if (reconciled) this.reconciliationPending = false;
+      },
+      hasPendingChanges: () => this.pendingVaultChanges.size > 0,
+      isIndexUpdateActive: () => this.isAnyIndexUpdateActive(),
+      flush: () => this.flushFileUpdates(),
+      query: () => {
+        const schedule = this.lifecycle.sidebarOpened();
+        if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
       }
-      if (!this.automaticWork.allowed) return;
-      if (this.pendingVaultChanges.size && !this.isAnyIndexUpdateActive()) await this.flushFileUpdates();
-      if (!this.automaticWork.allowed || this.isAnyIndexUpdateActive()) return;
-      const schedule = this.lifecycle.sidebarOpened();
-      if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
-    } finally {
-      this.resumingAutomaticWork = false;
-    }
+    };
   }
 
   async activateView(): Promise<void> {

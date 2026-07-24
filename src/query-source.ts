@@ -40,7 +40,6 @@ export class QuerySourceCoordinator {
     }
     if (selection.length > 0 && !isValidQueryText(selection)) return { kind: "short-selection" };
     if (isValidQueryText(selection)) {
-      this.lastOneShot = true;
       return { kind: "one-shot", source: { kind: "selection-once", text: selection } };
     }
     this.followingSelection = true;
@@ -48,9 +47,14 @@ export class QuerySourceCoordinator {
     return { kind: "follow-enabled" };
   }
 
-  /** A regular document edit naturally returns the displayed scope to whole-note. */
-  documentChanged(): void {
-    if (!this.followingSelection) this.lastOneShot = false;
+  /**
+   * Records a source only once the host has decided to schedule it. Candidate
+   * calculation must remain side-effect free so an inactive editor cannot
+   * accidentally change the range label.
+   */
+  adopt(source: QuerySource): void {
+    if (source.kind === "document") this.lastOneShot = false;
+    else if (source.kind === "selection-once") this.lastOneShot = true;
   }
 
   sourceForCurrentSelection(documentText: string, selection: string): QuerySource | undefined {
@@ -60,9 +64,10 @@ export class QuerySourceCoordinator {
 
   presentation(selection: string): QueryScopePresentation {
     if (this.followingSelection) {
-      return isValidQueryText(selection)
-        ? { kind: "following", text: "查询模式：跟随选区", tooltip: "关闭跟随选区查询" }
-        : { kind: "waiting", text: "查询模式：跟随选区 · 等待选择", tooltip: "关闭跟随选区查询" };
+      if (isValidQueryText(selection)) return { kind: "following", text: "查询模式：跟随选区", tooltip: "关闭跟随选区查询" };
+      return selection.length === 0
+        ? { kind: "waiting", text: "查询模式：跟随选区 · 等待选择", tooltip: "关闭跟随选区查询" }
+        : { kind: "waiting", text: "查询模式：跟随选区 · 至少选择 8 个非空白字符", tooltip: "关闭跟随选区查询" };
     }
     if (this.lastOneShot) return { kind: "once", text: "本次结果：选中内容 · 单次查询", tooltip: "查询选中内容" };
     return {

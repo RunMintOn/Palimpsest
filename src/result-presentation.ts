@@ -16,14 +16,17 @@ export interface ResultExcerptStyle {
 
 export interface ExcerptExpansionControl {
   expandable: boolean;
+  expanded: boolean;
   label: "展开全文" | "收起全文";
 }
 
 /** Presentation state for the overlaid Scheme-E excerpt control. */
 export function excerptExpansionControl(maxLines: number, overflow: boolean, expanded: boolean): ExcerptExpansionControl {
+  const expandable = maxLines > 0 && overflow;
   return {
-    expandable: maxLines > 0 && overflow,
-    label: expanded ? "收起全文" : "展开全文"
+    expandable,
+    expanded: expandable && expanded,
+    label: expandable && expanded ? "收起全文" : "展开全文"
   };
 }
 

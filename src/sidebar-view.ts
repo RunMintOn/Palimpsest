@@ -350,20 +350,16 @@ export class SideGrepView extends ItemView {
 
   private applyExcerptPresentation(card: ResultCard): void {
     const presentation = this.actions.resultExcerptPresentation();
+    if (presentation.maxLines === 0) {
+      card.showingFullExcerpt = false;
+      card.excerptOverflow = false;
+    }
     const style = resultExcerptStyle(presentation, card.showingFullExcerpt);
     card.quote.style.fontSize = style.fontSize;
     card.quote.style.lineHeight = style.lineHeight;
     card.quote.style.maxHeight = style.maxHeight ?? "";
     card.quote.style.overflow = style.maxHeight ? "hidden" : "";
-    if (presentation.maxLines === 0) {
-      card.excerptToggle.style.display = "none";
-      return;
-    }
-    const label = excerptExpansionControl(presentation.maxLines, card.excerptOverflow, card.showingFullExcerpt).label;
-    card.excerptToggle.setAttribute("title", label);
-    card.excerptToggle.setAttribute("aria-label", label);
-    setIcon(card.excerptToggle, card.showingFullExcerpt ? "chevron-up" : "chevron-down");
-    card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
+    this.applyExcerptControl(card, presentation);
     if (card.root.open) this.queueExcerptOverflowCheck(card);
   }
 
@@ -375,22 +371,28 @@ export class SideGrepView extends ItemView {
     if (!card.root.isConnected || !card.root.open) return;
     const presentation = this.actions.resultExcerptPresentation();
     if (presentation.maxLines === 0) {
+      card.showingFullExcerpt = false;
       card.excerptOverflow = false;
-      card.excerptToggle.style.display = "none";
+      this.applyExcerptControl(card, presentation);
       return;
     }
     if (!card.showingFullExcerpt) {
       card.excerptOverflow = card.quote.scrollHeight > card.quote.clientHeight + 1;
     }
-    card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
+    this.applyExcerptControl(card, presentation);
+  }
+
+  /** Keeps Scheme-E button, wording, icon, and wrapper classes in one state transition. */
+  private applyExcerptControl(card: ResultCard, presentation: ResultExcerptPresentation): void {
     const control = excerptExpansionControl(presentation.maxLines, card.excerptOverflow, card.showingFullExcerpt);
     const label = control.label;
     card.excerptToggle.setAttribute("title", label);
     card.excerptToggle.setAttribute("aria-label", label);
-    setIcon(card.excerptToggle, card.showingFullExcerpt ? "chevron-up" : "chevron-down");
+    setIcon(card.excerptToggle, control.expanded ? "chevron-up" : "chevron-down");
+    card.excerptToggle.style.display = control.expandable ? "" : "none";
     const wrapper = card.quote.parentElement;
     wrapper?.toggleClass("is-expandable", control.expandable);
-    wrapper?.toggleClass("is-expanded", card.showingFullExcerpt);
+    wrapper?.toggleClass("is-expanded", control.expanded);
   }
 
   private animateResultRefresh(): void {
