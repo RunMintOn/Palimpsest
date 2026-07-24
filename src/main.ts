@@ -13,6 +13,7 @@ import { createIndexStore, IndexDocument, IndexStore } from "./index-store";
 import { indexLoadRecoveryMessage } from "./index-load-feedback";
 import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
 import { executeIncrementalIndexPlan, IncrementalChangeSummary, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "./incremental-index-plan";
+import { completionActions } from "./index-update-coordination";
 import { runIndexReconciliation } from "./index-reconciliation";
 import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded } from "./index-scope";
@@ -193,21 +194,28 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   /** Retries only persisted skipped paths through the normal incremental pipeline. */
   async retrySkippedDocuments(): Promise<void> {
     if (this.retryingSkippedDocuments || !this.index.skippedDocuments.length) return;
-    if (this.isBuildActive()) throw new Error("索引正在更新，完成后再重试未索引文档");
-    const scope = this.index.scope;
-    if (!scope) throw new Error("当前索引不可用于增量重试，请先全量重建");
-    this.retryingSkippedDocuments = true;
-    this.flushingFileUpdates = true;
+    let started = false;
+    let patchSucceeded = false;
+    let refreshQuery = false;
     try {
+      if (this.isBuildActive()) throw new Error("索引正在更新，完成后再重试未索引文档");
+      const scope = this.index.scope;
+      if (!scope) throw new Error("当前索引不可用于增量重试，请先全量重建");
+      this.retryingSkippedDocuments = true;
+      this.flushingFileUpdates = true;
+      started = true;
       const changes = this.index.skippedDocuments.map((document) => ({ kind: "path", path: document.filePath } as const));
-      const refreshQuery = await this.commitChangedDocuments(changes, scope, true);
-      if (refreshQuery) this.refreshCurrentQuery();
+      refreshQuery = await this.commitChangedDocuments(changes, scope, true);
+      patchSucceeded = true;
     } catch (error) {
       console.error("[Palimpsest] Could not retry skipped documents", error);
       if (this.buildCancellation.isPluginActive) new Notice("重试未索引文档失败；原有报告已保留。");
     } finally {
-      this.flushingFileUpdates = false;
-      this.retryingSkippedDocuments = false;
+      if (started) {
+        this.flushingFileUpdates = false;
+        this.retryingSkippedDocuments = false;
+        this.completeIndexUpdate({ patchSucceeded, refreshRequested: refreshQuery, schedulePendingAfterFailure: true });
+      }
     }
   }
 
@@ -431,12 +439,23 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       }, this.results);
     } finally {
       this.flushingFileUpdates = false;
-      if (!this.buildCancellation.isPluginActive) return;
-      if (refreshQuery) this.refreshCurrentQuery();
-      if (!failed && this.pendingVaultChanges.size && !this.isBuildActive() && this.index.isReady(this.indexIdentity())) {
-        this.schedulePendingFileUpdates();
-      }
+      this.completeIndexUpdate({ patchSucceeded: !failed, refreshRequested: refreshQuery, schedulePendingAfterFailure: false });
     }
+  }
+
+  /** Shared post-update coordination keeps manual retry and ordinary patches consistent. */
+  private completeIndexUpdate(options: { patchSucceeded: boolean; refreshRequested: boolean; schedulePendingAfterFailure: boolean }): void {
+    const actions = completionActions({
+      pluginActive: this.buildCancellation.isPluginActive,
+      indexReady: this.index.isReady(this.indexIdentity()),
+      buildActive: this.isBuildActive(),
+      pendingChanges: this.pendingVaultChanges.size,
+      fallbackGenerationInUse: this.fallbackGenerationInUse,
+      deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
+      ...options
+    });
+    if (actions.refreshQuery) this.refreshCurrentQuery();
+    if (actions.schedulePending) this.schedulePendingFileUpdates();
   }
 
   /** The only production full-build request path: scan, confirm, then execute. */

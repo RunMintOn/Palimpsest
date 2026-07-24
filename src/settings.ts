@@ -1,6 +1,7 @@
 import { App, FuzzySuggestModal, Notice, PluginSettingTab, Setting, TFolder } from "obsidian";
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope } from "./index-scope";
 import SideGrepPlugin from "./main";
+import { runSettingsRetryAction } from "./settings-retry-action";
 import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults, SettingsResetSection } from "./settings-reset";
 
 export interface SideGrepSettings {
@@ -194,8 +195,13 @@ export class SideGrepSettingTab extends PluginSettingTab {
           .setDisabled(report.retrying)
           .onClick(async () => {
             button.setDisabled(true);
-            await this.plugin.retrySkippedDocuments();
-            this.display();
+            await runSettingsRetryAction({
+              retry: () => this.plugin.retrySkippedDocuments(),
+              // Expected retry failures are already reported by the plugin.
+              // This only covers an unexpected rejected plugin boundary.
+              reportFailure: () => new Notice("重试未索引文档失败，请稍后重试。"),
+              redraw: () => this.display()
+            });
           }));
     }
   }
