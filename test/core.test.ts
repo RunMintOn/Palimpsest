@@ -11,10 +11,11 @@ import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, execute
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
 import { PersistentIndex } from "../src/persistent-index";
 import { planIndexReconciliation } from "../src/index-reconciliation";
-import { buildQueryContext } from "../src/query-context";
+import { AutomaticWorkCoordinator } from "../src/automatic-work";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
-import { hasMaterialResultChange, resultExcerptStyle } from "../src/result-presentation";
+import { isValidQueryText, QuerySourceCoordinator } from "../src/query-source";
+import { excerptExpansionControl, hasMaterialResultChange, resultExcerptStyle } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
 import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults } from "../src/settings-reset";
 import type { SideGrepSettings } from "../src/settings";
@@ -66,7 +67,6 @@ const defaultSettings: SideGrepSettings = {
   dimensions: 1024,
   keepAlive: "5m",
   queryDebounceMs: 800,
-  queryMaxLength: 1400,
   chunkTargetLength: 650,
   chunkMaxLength: 1100,
   chunkMinLength: 80,
@@ -137,14 +137,68 @@ test("chunk IDs distinguish repeated occurrences without making unrelated edits 
   assert.doesNotThrow(() => index.fullReplacement(identity, repeated.map((chunk) => ({ ...chunk, vector: [1, 0, 0] })), indexScope([])), "fixed duplicate-content chunks are accepted by PersistentIndex");
 });
 
-test("query context uses current paragraph, heading, and prior paragraph with a length bound", () => {
-  const markdown = "# 语义检索\n\n前一个段落讨论 embedding 如何编码中文知识。\n\n当前段落讨论在 Obsidian 编辑时实时召回相关片段。\n\n下一段";
-  const context = buildQueryContext(markdown, 4, 300);
-  assert.equal(context.heading, "语义检索");
-  assert.match(context.query, /前一个段落/);
-  assert.match(context.query, /当前段落/);
-  assert.ok(context.query.length <= 300);
-  assert.ok(buildQueryContext(markdown, 4, 20).query.length <= 20);
+test("query source uses one complete buffer or one complete selection with no local truncation", () => {
+  const source = new QuerySourceCoordinator();
+  const fullBuffer = "# 标题\n\n" + "完整笔记内容。".repeat(500);
+  assert.deepEqual(source.sourceForCurrentSelection(fullBuffer, ""), { kind: "document", text: fullBuffer });
+  assert.ok(fullBuffer.length > 1400);
+  const selection = "完整选区内容。".repeat(200);
+  const action = source.selectionButton(selection);
+  assert.deepEqual(action, { kind: "one-shot", source: { kind: "selection-once", text: selection } });
+  assert.equal(isValidQueryText("  一二三四五六七  "), false);
+  assert.equal(isValidQueryText("一二三四五六七八"), true);
+});
+
+test("selection button distinguishes one-shot, short selection, and follow mode", () => {
+  const source = new QuerySourceCoordinator();
+  assert.deepEqual(source.selectionButton(""), { kind: "follow-enabled" });
+  assert.equal(source.isFollowingSelection, true);
+  assert.deepEqual(source.selectionButton("任意文本"), { kind: "follow-disabled" });
+  assert.equal(source.isFollowingSelection, false);
+  assert.deepEqual(source.selectionButton("短选区"), { kind: "short-selection" });
+  assert.equal(source.isFollowingSelection, false);
+  assert.deepEqual(source.selectionButton("足够长的选区文本用于即时查询"), {
+    kind: "one-shot", source: { kind: "selection-once", text: "足够长的选区文本用于即时查询" }
+  });
+  assert.equal(source.isFollowingSelection, false);
+});
+
+test("follow selection waits for valid text and preserves mode across a document change", () => {
+  const source = new QuerySourceCoordinator();
+  source.selectionButton("");
+  assert.equal(source.sourceForCurrentSelection("全文内容足够长", ""), undefined);
+  assert.equal(source.presentation("").kind, "waiting");
+  assert.deepEqual(source.sourceForCurrentSelection("全文内容足够长", "新的有效选区内容"), {
+    kind: "selection-follow", text: "新的有效选区内容"
+  });
+  source.documentChanged();
+  assert.equal(source.isFollowingSelection, true);
+  assert.equal(source.presentation("新的有效选区内容").kind, "following");
+});
+
+test("query source labels restore whole-note scope after a normal edit", () => {
+  const source = new QuerySourceCoordinator();
+  source.selectionButton("足够长的选区文本用于单次查询");
+  assert.equal(source.presentation("").kind, "once");
+  source.documentChanged();
+  assert.deepEqual(source.presentation(""), {
+    kind: "document", text: "查询范围：当前笔记", tooltip: "开启跟随选区查询"
+  });
+});
+
+test("automatic work requires one visible view and visibility changes are idempotent", () => {
+  const automatic = new AutomaticWorkCoordinator<object>();
+  const first = {};
+  const second = {};
+  assert.equal(automatic.allowed, false);
+  assert.equal(automatic.setVisible(first, false), false);
+  assert.equal(automatic.setVisible(first, true), true);
+  assert.equal(automatic.setVisible(first, true), false);
+  assert.equal(automatic.setVisible(second, true), false);
+  assert.equal(automatic.setVisible(first, false), false);
+  assert.equal(automatic.allowed, true);
+  assert.equal(automatic.remove(second), true);
+  assert.equal(automatic.allowed, false);
 });
 
 test("cosine, ordering, per-file cap, exclusion, and duplicate removal", () => {
@@ -240,6 +294,10 @@ test("result excerpt density uses relative typography and removes the clamp for 
     fontSize: "0.92em", lineHeight: "1.48", maxHeight: undefined
   });
   assert.equal(resultExcerptStyle({ ...presentation, maxLines: 0 }, false).maxHeight, undefined);
+  assert.deepEqual(excerptExpansionControl(10, false, false), { expandable: false, label: "展开全文" });
+  assert.deepEqual(excerptExpansionControl(10, true, false), { expandable: true, label: "展开全文" });
+  assert.deepEqual(excerptExpansionControl(10, true, true), { expandable: true, label: "收起全文" });
+  assert.deepEqual(excerptExpansionControl(0, true, false), { expandable: false, label: "展开全文" });
 });
 
 test("index scope normalizes multiline paths, separators, empty entries, duplicates, and order", () => {

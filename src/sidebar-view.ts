@@ -1,6 +1,7 @@
 import { ItemView, MarkdownRenderer, setIcon, WorkspaceLeaf } from "obsidian";
 import { ExpansionPolicy, shouldAutoExpand } from "./expansion-policy";
-import { hasMaterialResultChange, ResultExcerptPresentation, resultExcerptStyle } from "./result-presentation";
+import { excerptExpansionControl, hasMaterialResultChange, ResultExcerptPresentation, resultExcerptStyle } from "./result-presentation";
+import { QueryScopePresentation } from "./query-source";
 import { SearchResult, SidebarState } from "./types";
 
 export const PALIMPSEST_VIEW_TYPE = "palimpsest-sidebar";
@@ -13,6 +14,9 @@ export interface SidebarActions {
   quoteMarkup(result: SearchResult, selectedText?: string): string;
   expansionPolicy(): ExpansionPolicy;
   resultExcerptPresentation(): ResultExcerptPresentation;
+  queryScopePresentation(): QueryScopePresentation;
+  querySelectionButton(): void;
+  sidebarVisibilityChanged(view: SideGrepView, visible: boolean): void;
   rebuildIndex(): Promise<void>;
   cancelIndex(): void;
   refreshCurrentQuery(): void;
@@ -40,6 +44,8 @@ export class SideGrepView extends ItemView {
   private shellReady = false;
   private statusIcon!: HTMLElement;
   private refreshButton!: HTMLButtonElement;
+  private queryScopeButton!: HTMLButtonElement;
+  private scopeStatus!: HTMLElement;
   private indexPanel!: HTMLElement;
   private emptyState!: HTMLElement;
   private resultsEl!: HTMLElement;
@@ -47,6 +53,10 @@ export class SideGrepView extends ItemView {
   private resultAnimation: Animation | undefined;
   private expansionPolicyKey = "";
   private excerptPresentationKey = "";
+  private visibilityObserver: IntersectionObserver | undefined;
+  private visibilityTimer: number | undefined;
+  private intersectsViewport = false;
+  private currentlyVisible = false;
 
   constructor(leaf: WorkspaceLeaf, private readonly actions: SidebarActions) { super(leaf); }
   getViewType(): string { return PALIMPSEST_VIEW_TYPE; }
@@ -55,6 +65,7 @@ export class SideGrepView extends ItemView {
 
   showResults(state: SidebarState, results: SearchResult[] = this.results): void {
     this.state = state;
+    if (this.shellReady && !this.currentlyVisible) return;
     this.ensureShell();
     this.updateToolbar();
     this.updateIndexPanel();
@@ -83,6 +94,7 @@ export class SideGrepView extends ItemView {
     this.updateIndexPanel();
     this.reconcileResults(this.results);
     this.updateEmptyState();
+    this.observeVisibility();
     this.actions.sidebarOpened();
   }
 
@@ -90,6 +102,11 @@ export class SideGrepView extends ItemView {
     this.resultAnimation?.cancel();
     this.shellReady = false;
     this.cards.clear();
+    this.visibilityObserver?.disconnect();
+    this.visibilityObserver = undefined;
+    if (this.visibilityTimer !== undefined) window.clearTimeout(this.visibilityTimer);
+    this.visibilityTimer = undefined;
+    this.actions.sidebarVisibilityChanged(this, false);
   }
 
   private ensureShell(): void {
@@ -103,12 +120,29 @@ export class SideGrepView extends ItemView {
     toolbar.createDiv({ cls: "obsdn-side-grep-toolbar-spacer" });
     this.statusIcon = toolbar.createDiv({ cls: "obsdn-side-grep-status-icon" });
 
+    this.queryScopeButton = toolbar.createEl("button", {
+      cls: "clickable-icon obsdn-side-grep-toolbar-button obsdn-side-grep-scope-button",
+      attr: { "aria-label": "选中内容查询" }
+    });
+    setIcon(this.queryScopeButton, "text-select");
+    this.queryScopeButton.addEventListener("click", () => {
+      if (!this.queryScopeButton.hasClass("is-following")) {
+        this.queryScopeButton.removeClass("is-pulse");
+        void this.queryScopeButton.offsetWidth;
+        this.queryScopeButton.addClass("is-pulse");
+        window.setTimeout(() => this.queryScopeButton?.removeClass("is-pulse"), 450);
+      }
+      this.actions.querySelectionButton();
+    });
+
     this.refreshButton = toolbar.createEl("button", {
       cls: "clickable-icon obsdn-side-grep-toolbar-button",
       attr: { "aria-label": "刷新相关片段", title: "刷新相关片段" }
     });
     setIcon(this.refreshButton, "refresh-cw");
     this.refreshButton.addEventListener("click", () => this.actions.refreshCurrentQuery());
+
+    this.scopeStatus = root.createDiv({ cls: "obsdn-side-grep-scope-status" });
 
     this.indexPanel = root.createDiv({ cls: "obsdn-side-grep-index-panel" });
     this.emptyState = root.createDiv({ cls: "obsdn-side-grep-empty-state" });
@@ -137,6 +171,18 @@ export class SideGrepView extends ItemView {
     const indexActionVisible = Boolean(this.state.indexAction) || this.state.kind === "indexing";
     this.refreshButton.style.display = indexActionVisible ? "none" : "";
     this.refreshButton.disabled = this.state.kind === "indexing";
+
+    const scope = this.actions.queryScopePresentation();
+    const following = scope.kind === "following" || scope.kind === "waiting";
+    const scopeTooltip = scope.tooltip;
+    this.queryScopeButton.setAttribute("title", scopeTooltip);
+    this.queryScopeButton.setAttribute("aria-label", scopeTooltip);
+    this.queryScopeButton.toggleClass("is-following", following);
+    this.scopeStatus.empty();
+    this.scopeStatus.toggleClass("is-following", following);
+    this.scopeStatus.toggleClass("is-once", scope.kind === "once");
+    this.scopeStatus.createSpan({ cls: "obsdn-side-grep-scope-dot" });
+    this.scopeStatus.createSpan({ cls: "obsdn-side-grep-scope-detail", text: scope.text });
   }
 
   private updateIndexPanel(): void {
@@ -217,15 +263,20 @@ export class SideGrepView extends ItemView {
       cls: "obsdn-side-grep-file",
       attr: { href: "#", "aria-label": "打开来源；拖动可插入链接", title: "打开来源；拖动可插入链接", draggable: "true" }
     });
-    const breadcrumb = root.createDiv({ cls: "obsdn-side-grep-breadcrumb" });
-    const excerpt = root.createDiv({ cls: "obsdn-side-grep-excerpt-wrap" });
-    const quote = excerpt.createDiv({ cls: "obsdn-side-grep-excerpt markdown-rendered" });
-    const excerptToggle = excerpt.createEl("button", { text: "显示全文", cls: "obsdn-side-grep-excerpt-toggle" });
-    const quoteAction = excerpt.createEl("button", {
-      cls: "clickable-icon obsdn-side-grep-card-action obsdn-side-grep-quote-action",
+    const summarySpacer = summary.createSpan({ cls: "obsdn-side-grep-summary-spacer", attr: { title: "展开或收起" } });
+    const quoteAction = summary.createEl("button", {
+      cls: "clickable-icon obsdn-side-grep-summary-quote-action",
       attr: { "aria-label": "引用片段；拖动可插入引用", title: "引用片段；拖动可插入引用", draggable: "true" }
     });
     setIcon(quoteAction, "quote");
+    const breadcrumb = root.createDiv({ cls: "obsdn-side-grep-breadcrumb" });
+    const excerpt = root.createDiv({ cls: "obsdn-side-grep-excerpt-wrap" });
+    const quote = excerpt.createDiv({ cls: "obsdn-side-grep-excerpt markdown-rendered" });
+    const excerptToggle = excerpt.createEl("button", {
+      cls: "clickable-icon obsdn-side-grep-excerpt-toggle",
+      attr: { "aria-label": "展开全文", title: "展开全文" }
+    });
+    setIcon(excerptToggle, "chevron-down");
     const card: ResultCard = {
       root,
       file,
@@ -245,9 +296,16 @@ export class SideGrepView extends ItemView {
       void this.actions.openResult(card.result);
     });
     file.addEventListener("dragstart", (event) => this.setDragPayload(event, this.actions.linkMarkup(card.result)));
-    quoteAction.addEventListener("click", () => this.actions.insertQuote(card.result, this.selectedExcerpt(card.quote)));
+    quoteAction.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.actions.insertQuote(card.result, this.selectedExcerpt(card.quote));
+    });
     quoteAction.addEventListener("dragstart", (event) => this.setDragPayload(event, this.actions.quoteMarkup(card.result, this.selectedExcerpt(card.quote))));
-    excerptToggle.addEventListener("click", () => {
+    // These controls live inside <summary>; prevent native details toggling.
+    quoteAction.addEventListener("pointerdown", (event) => event.stopPropagation());
+    excerptToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
       card.showingFullExcerpt = !card.showingFullExcerpt;
       this.applyExcerptPresentation(card);
     });
@@ -301,7 +359,10 @@ export class SideGrepView extends ItemView {
       card.excerptToggle.style.display = "none";
       return;
     }
-    card.excerptToggle.setText(card.showingFullExcerpt ? "收起全文" : "显示全文");
+    const label = excerptExpansionControl(presentation.maxLines, card.excerptOverflow, card.showingFullExcerpt).label;
+    card.excerptToggle.setAttribute("title", label);
+    card.excerptToggle.setAttribute("aria-label", label);
+    setIcon(card.excerptToggle, card.showingFullExcerpt ? "chevron-up" : "chevron-down");
     card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
     if (card.root.open) this.queueExcerptOverflowCheck(card);
   }
@@ -322,7 +383,14 @@ export class SideGrepView extends ItemView {
       card.excerptOverflow = card.quote.scrollHeight > card.quote.clientHeight + 1;
     }
     card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
-    card.excerptToggle.setText(card.showingFullExcerpt ? "收起全文" : "显示全文");
+    const control = excerptExpansionControl(presentation.maxLines, card.excerptOverflow, card.showingFullExcerpt);
+    const label = control.label;
+    card.excerptToggle.setAttribute("title", label);
+    card.excerptToggle.setAttribute("aria-label", label);
+    setIcon(card.excerptToggle, card.showingFullExcerpt ? "chevron-up" : "chevron-down");
+    const wrapper = card.quote.parentElement;
+    wrapper?.toggleClass("is-expandable", control.expandable);
+    wrapper?.toggleClass("is-expanded", card.showingFullExcerpt);
   }
 
   private animateResultRefresh(): void {
@@ -348,5 +416,30 @@ export class SideGrepView extends ItemView {
     event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData("text/plain", markdown);
     event.dataTransfer.setData("text/markdown", markdown);
+  }
+
+  private observeVisibility(): void {
+    this.visibilityObserver?.disconnect();
+    this.visibilityObserver = new IntersectionObserver((entries) => {
+      this.intersectsViewport = entries.some((entry) => entry.target === this.contentEl && entry.isIntersecting);
+      this.reportVisibility();
+    });
+    this.visibilityObserver.observe(this.contentEl);
+    this.reportVisibility();
+  }
+
+  private reportVisibility(): void {
+    const rect = this.contentEl.getBoundingClientRect();
+    const style = window.getComputedStyle(this.contentEl);
+    const visible = this.contentEl.isConnected && this.intersectsViewport && rect.width > 0 && rect.height > 0 &&
+      style.display !== "none" && style.visibility !== "hidden";
+    if (this.visibilityTimer !== undefined) window.clearTimeout(this.visibilityTimer);
+    this.visibilityTimer = window.setTimeout(() => {
+      this.visibilityTimer = undefined;
+      const changed = this.currentlyVisible !== visible;
+      this.currentlyVisible = visible;
+      this.actions.sidebarVisibilityChanged(this, visible);
+      if (changed && visible) this.showResults(this.state, this.results);
+    }, 80);
   }
 }

@@ -10,7 +10,6 @@ export interface SideGrepSettings {
   dimensions: number;
   keepAlive: string;
   queryDebounceMs: number;
-  queryMaxLength: number;
   chunkTargetLength: number;
   chunkMaxLength: number;
   chunkMinLength: number;
@@ -33,7 +32,6 @@ export const DEFAULT_SETTINGS: SideGrepSettings = {
   dimensions: 1024,
   keepAlive: "5m",
   queryDebounceMs: 800,
-  queryMaxLength: 1400,
   chunkTargetLength: 650,
   chunkMaxLength: 1100,
   chunkMinLength: 80,
@@ -57,9 +55,25 @@ export interface StoredSideGrepSettings extends Omit<Partial<SideGrepSettings>, 
 
 export function migrateSettings(settings: StoredSideGrepSettings = {}): SideGrepSettings {
   return {
-    ...DEFAULT_SETTINGS,
-    ...settings,
-    excludedDirectories: indexScope(settings.excludedDirectories ?? DEFAULT_SETTINGS.excludedDirectories).excludedDirectories
+    endpoint: settings.endpoint ?? DEFAULT_SETTINGS.endpoint,
+    model: settings.model ?? DEFAULT_SETTINGS.model,
+    dimensions: settings.dimensions ?? DEFAULT_SETTINGS.dimensions,
+    keepAlive: settings.keepAlive ?? DEFAULT_SETTINGS.keepAlive,
+    queryDebounceMs: settings.queryDebounceMs ?? DEFAULT_SETTINGS.queryDebounceMs,
+    chunkTargetLength: settings.chunkTargetLength ?? DEFAULT_SETTINGS.chunkTargetLength,
+    chunkMaxLength: settings.chunkMaxLength ?? DEFAULT_SETTINGS.chunkMaxLength,
+    chunkMinLength: settings.chunkMinLength ?? DEFAULT_SETTINGS.chunkMinLength,
+    topK: settings.topK ?? DEFAULT_SETTINGS.topK,
+    maxPerFile: settings.maxPerFile ?? DEFAULT_SETTINGS.maxPerFile,
+    excludedDirectories: indexScope(settings.excludedDirectories ?? DEFAULT_SETTINGS.excludedDirectories).excludedDirectories,
+    queryInstruction: settings.queryInstruction ?? DEFAULT_SETTINGS.queryInstruction,
+    embeddingBatchSize: settings.embeddingBatchSize ?? DEFAULT_SETTINGS.embeddingBatchSize,
+    autoExpandCount: settings.autoExpandCount ?? DEFAULT_SETTINGS.autoExpandCount,
+    autoExpandThresholdEnabled: settings.autoExpandThresholdEnabled ?? DEFAULT_SETTINGS.autoExpandThresholdEnabled,
+    autoExpandThreshold: settings.autoExpandThreshold ?? DEFAULT_SETTINGS.autoExpandThreshold,
+    resultExcerptFontScale: settings.resultExcerptFontScale ?? DEFAULT_SETTINGS.resultExcerptFontScale,
+    resultExcerptLineHeight: settings.resultExcerptLineHeight ?? DEFAULT_SETTINGS.resultExcerptLineHeight,
+    resultExcerptMaxLines: settings.resultExcerptMaxLines ?? DEFAULT_SETTINGS.resultExcerptMaxLines
   };
 }
 
@@ -253,7 +267,6 @@ export class SideGrepSettingTab extends PluginSettingTab {
   private retrievalPage(): void {
     this.heading("查询", "query");
     this.number("查询 debounce (ms)", "停止输入多久后查询", "queryDebounceMs", 100);
-    this.number("查询最大长度", "局部上下文最大字符数", "queryMaxLength", 64);
     this.heading("检索结果", "retrieval");
     this.number("Top K", "返回结果数", "topK", 1);
     this.number("每文件最大结果数", "默认最多两个片段", "maxPerFile", 1);

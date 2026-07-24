@@ -14,6 +14,19 @@ export interface ResultExcerptStyle {
   maxHeight?: string;
 }
 
+export interface ExcerptExpansionControl {
+  expandable: boolean;
+  label: "展开全文" | "收起全文";
+}
+
+/** Presentation state for the overlaid Scheme-E excerpt control. */
+export function excerptExpansionControl(maxLines: number, overflow: boolean, expanded: boolean): ExcerptExpansionControl {
+  return {
+    expandable: maxLines > 0 && overflow,
+    label: expanded ? "收起全文" : "展开全文"
+  };
+}
+
 /** Pure DOM-style model; keeping it here makes density behavior testable. */
 export function resultExcerptStyle(
   presentation: ResultExcerptPresentation,

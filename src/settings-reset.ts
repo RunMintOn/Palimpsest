@@ -14,7 +14,7 @@ export type SettingsResetSection =
 const sectionKeys: Record<SettingsResetSection, readonly (keyof SideGrepSettings)[]> = {
   scope: ["excludedDirectories"],
   embedding: ["endpoint", "model", "dimensions", "keepAlive"],
-  query: ["queryDebounceMs", "queryMaxLength"],
+  query: ["queryDebounceMs"],
   chunking: ["chunkTargetLength", "chunkMaxLength", "chunkMinLength"],
   retrieval: ["topK", "maxPerFile"],
   expansion: ["autoExpandCount", "autoExpandThresholdEnabled", "autoExpandThreshold"],

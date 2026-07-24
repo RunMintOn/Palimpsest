@@ -1,4 +1,5 @@
 import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf, requestUrl } from "obsidian";
+import { EditorView } from "@codemirror/view";
 import { embeddingText } from "./chunker";
 import { embeddingInputHash } from "./embedding-reuse";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
@@ -19,9 +20,10 @@ import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-da
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded, sameIndexScope } from "./index-scope";
 import { canApplyIndexScopeChange, shouldRefreshAfterIndexScopeChange } from "./index-scope-application";
 import { planIndexScopeTransition } from "./index-scope-transition";
-import { buildQueryContext } from "./query-context";
+import { AutomaticWorkCoordinator } from "./automatic-work";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
+import { isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
 import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
@@ -47,6 +49,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private readonly pendingVaultChanges = new VaultChangeQueue();
   private flushingFileUpdates = false;
   private readonly queryGate = new QueryGate();
+  private readonly querySource = new QuerySourceCoordinator();
+  private readonly automaticWork = new AutomaticWorkCoordinator<SideGrepView>();
   private lifecycle = new QueryLifecycleCoordinator("uninitialized");
   private latestMarkdownView: MarkdownView | undefined;
   private lastActivatedMarkdownPath: string | undefined;
@@ -66,6 +70,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private retryingSkippedDocuments = false;
   /** A user-requested scope patch keeps ordinary vault events queued until it finishes. */
   private applyingIndexScope = false;
+  private reconciliationPending = true;
+  private resumingAutomaticWork = false;
 
   async onload(): Promise<void> {
     let saved: unknown;
@@ -104,6 +110,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.registerEvent(this.app.workspace.on("editor-change", (editor, view) => this.onEditorChange(editor, view)));
     this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => this.onActiveLeafChange(leaf)));
+    this.registerEditorExtension(EditorView.updateListener.of((update) => {
+      if (update.selectionSet) this.onEditorSelectionChanged(update.view);
+    }));
     this.registerEvent(this.app.vault.on("create", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("modify", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.scheduleFileUpdate(file)));
@@ -115,9 +124,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         this.latestMarkdownView = view;
         this.lifecycle.rememberMarkdownContext();
       }
-      const schedule = this.lifecycle.layoutReady();
-      if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
-      void this.reconcileIndexAfterLayout();
+      this.lifecycle.layoutReady();
+      void this.resumeAutomaticWork();
     });
   }
 
@@ -372,8 +380,37 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     if (!(view instanceof MarkdownView)) return;
     this.latestMarkdownView = view;
     this.lifecycle.rememberMarkdownContext();
+    this.querySource.documentChanged();
+    // Follow-selection mode deliberately ignores ordinary document edits.
+    if (this.querySource.isFollowingSelection) {
+      this.clearQueryTimers();
+      this.queryGate.invalidate();
+      return;
+    }
     const schedule = this.lifecycle.editorChanged();
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule, editor, view);
+  }
+
+  /** CM6 emits selection-only updates that Obsidian's editor-change omits. */
+  private onEditorSelectionChanged(editorView: EditorView): void {
+    const markdown = this.latestMarkdownView;
+    if (!markdown?.file || !markdown.contentEl.contains(editorView.dom)) return;
+    if (!this.querySource.isFollowingSelection) {
+      this.present(this.state, this.results);
+      return;
+    }
+    this.clearQueryTimers();
+    this.queryGate.invalidate();
+    const selection = markdown.editor.getSelection();
+    if (!isValidQueryText(selection)) {
+      if (this.automaticWork.allowed) this.present(this.state, this.results);
+      return;
+    }
+    if (!this.automaticWork.allowed) return;
+    this.scheduleResolvedQuery({ immediate: false, reason: "typing" }, {
+      kind: "selection-follow",
+      text: selection
+    }, markdown.editor, markdown);
   }
 
   private onFileOpen(file: TFile | null): void {
@@ -396,13 +433,25 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule, view.editor, view);
   }
 
-  /** The one production entry point for typing, file, sidebar, and index-ready queries. */
+  /** The one production entry point for automatic document/follow-selection queries. */
   private scheduleQueryFromCurrentEditor(schedule: QuerySchedule, suppliedEditor?: Editor, suppliedView?: MarkdownView): void {
-    this.clearQueryTimers();
-    const generation = this.queryGate.begin();
+    if (!this.automaticWork.allowed) return;
     const view = suppliedView ?? this.latestMarkdownView;
     const editor = suppliedEditor ?? view?.editor;
     if (!view || !editor) return;
+    const source = this.querySource.sourceForCurrentSelection(editor.getValue(), editor.getSelection());
+    if (!source) {
+      this.clearQueryTimers();
+      this.queryGate.invalidate();
+      this.present(this.state, this.results);
+      return;
+    }
+    this.scheduleResolvedQuery(schedule, source, editor, view);
+  }
+
+  private scheduleResolvedQuery(schedule: QuerySchedule, source: QuerySource, editor: Editor, view: MarkdownView): void {
+    this.clearQueryTimers();
+    const generation = this.queryGate.begin();
     const buffer = editor.getValue();
 
     // Build progress is authoritative: input only invalidates stale work and is
@@ -412,28 +461,24 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.showIndexRequirement();
       return;
     }
-    if (!buffer.trim()) {
-      this.present({ kind: "waiting-input", message: "等待输入" }, []);
+    if (!isValidQueryText(source.text)) {
+      const message = source.kind === "document" ? "至少输入 8 个非空白字符后查询" : "至少选择 8 个非空白字符";
+      this.present({ kind: "waiting-input", message }, source.kind === "document" ? [] : this.results);
       return;
     }
     if (!schedule.immediate) {
       this.present({ kind: "waiting-debounce", message: "等待停笔…" }, this.results);
-      this.queryTimer = window.setTimeout(() => void this.runQuery(generation, editor, view, view.file?.path, buffer), this.settings.queryDebounceMs);
+      this.queryTimer = window.setTimeout(() => void this.runQuery(generation, source, editor, view, view.file?.path, buffer), this.settings.queryDebounceMs);
       return;
     }
-    void this.runQuery(generation, editor, view, view.file?.path, buffer);
+    void this.runQuery(generation, source, editor, view, view.file?.path, buffer);
   }
 
-  private async runQuery(generation: number, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): Promise<void> {
-    if (!this.queryGate.isCurrent(generation) || editor.getValue() !== scheduledBuffer || this.latestMarkdownView !== view) return;
+  private async runQuery(generation: number, source: QuerySource, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): Promise<void> {
+    if (!this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) return;
     if (this.isBuildActive()) return;
     if (!this.index.isReady(this.indexIdentity())) {
       this.showIndexRequirement();
-      return;
-    }
-    const context = buildQueryContext(scheduledBuffer, editor.getCursor().line, this.settings.queryMaxLength);
-    if (context.query.replace(/\s/g, "").length < 8) {
-      this.present({ kind: "waiting-input", message: "至少输入 8 个非空白字符后查询" }, []);
       return;
     }
     this.present({ kind: "querying", message: "查询中…" }, this.results);
@@ -442,9 +487,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       if (this.queryGate.isCurrent(generation)) this.present({ kind: "loading-model", message: "模型加载中/查询中…" }, this.results);
     }, 600);
     try {
-      const response = await this.provider().embedQuery(context.query);
+      const response = await this.provider().embedQuery(source.text);
       if (this.modelTimer) window.clearTimeout(this.modelTimer);
-      if (!this.queryGate.isCurrent(generation) || editor.getValue() !== scheduledBuffer || this.latestMarkdownView !== view || view.file?.path !== filePath) return;
+      if (!this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) return;
       const results = rankChunks(response.vectors[0], this.index.chunks, {
         topK: this.settings.topK,
         maxPerFile: this.settings.maxPerFile,
@@ -457,10 +502,19 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.present({ kind: "complete", message, latencyMs }, results);
     } catch (error) {
       if (this.modelTimer) window.clearTimeout(this.modelTimer);
-      if (!this.queryGate.isCurrent(generation)) return;
+      if (!this.queryGate.isCurrent(generation) || !this.automaticWork.allowed) return;
       const message = error instanceof EmbeddingError && error.kind === "connection" ? "Ollama 不可用" : `查询失败：${error instanceof Error ? error.message : String(error)}`;
       this.present({ kind: error instanceof EmbeddingError && error.kind === "connection" ? "ollama-unavailable" : "query-failed", message }, this.results);
     }
+  }
+
+  private isQueryRequestCurrent(generation: number, source: QuerySource, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): boolean {
+    if (!this.automaticWork.allowed || !this.queryGate.isCurrent(generation) || editor.getValue() !== scheduledBuffer ||
+      this.latestMarkdownView !== view || view.file?.path !== filePath) return false;
+    // A click-initiated snapshot intentionally survives cursor-only selection
+    // changes. Follow mode instead verifies that its current selection remains
+    // exactly the text that was debounced.
+    return source.kind !== "selection-follow" || editor.getSelection() === source.text;
   }
 
   private clearQueryTimers(): void {
@@ -488,20 +542,21 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       return;
     }
     if (!this.index.isReady(this.indexIdentity())) return;
+    if (!this.automaticWork.allowed) return;
     this.schedulePendingFileUpdates();
   }
 
   private schedulePendingFileUpdates(): void {
-    if (!this.buildCancellation.isPluginActive) return;
+    if (!this.buildCancellation.isPluginActive || !this.automaticWork.allowed) return;
     if (this.updateTimer) window.clearTimeout(this.updateTimer);
     this.updateTimer = window.setTimeout(() => void this.flushFileUpdates(), 500);
   }
 
   /** Layout-ready startup check compares path/stat metadata only, never every note body. */
-  private async reconcileIndexAfterLayout(): Promise<void> {
-    if (!this.buildCancellation.isPluginActive || !this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred || this.isAnyIndexUpdateActive()) return;
+  private async reconcileIndexAfterLayout(): Promise<boolean> {
+    if (!this.automaticWork.allowed || !this.buildCancellation.isPluginActive || !this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse || this.deferredLargeIndexUpdate.isDeferred || this.isAnyIndexUpdateActive()) return false;
     const scope = this.index.scope;
-    if (!scope) return;
+    if (!scope) return false;
     try {
       await runIndexReconciliation(
         [...this.index.documents, ...this.index.skippedDocuments],
@@ -512,18 +567,22 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
           if (!changes.length || this.deferredLargeIndexUpdate.isDeferred) return;
           this.vaultRevision.noteChange();
           for (const change of changes) this.pendingVaultChanges.enqueue(change, this.vaultRevision.value);
-          this.schedulePendingFileUpdates();
+          // Reconciliation is automatic work too; preserve the queue while
+          // hidden and let visibility resumption perform the flush.
+          if (this.automaticWork.allowed) this.schedulePendingFileUpdates();
         }
       );
+      return true;
     } catch (error) {
       console.error("[Palimpsest] Could not reconcile the local index with the vault", error);
       new Notice("无法核对本地索引与 vault 文件；当前索引仍可用，可稍后全量重建。");
+      return true;
     }
   }
 
   private async flushFileUpdates(): Promise<void> {
     this.updateTimer = undefined;
-    if (!this.buildCancellation.isPluginActive || this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.flushingFileUpdates || this.isAnyIndexUpdateActive() || !this.index.isReady(this.indexIdentity())) return;
+    if (!this.automaticWork.allowed || !this.buildCancellation.isPluginActive || this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.flushingFileUpdates || this.isAnyIndexUpdateActive() || !this.index.isReady(this.indexIdentity())) return;
     const changes = this.pendingVaultChanges.take();
     if (!changes.length) return;
     const effectiveScope = this.index.scope;
@@ -561,7 +620,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
       ...options
     });
-    if (actions.refreshQuery) this.refreshCurrentQuery();
+    if (actions.refreshQuery && this.automaticWork.allowed && !this.resumingAutomaticWork) this.refreshCurrentQuery();
     if (actions.schedulePending) this.schedulePendingFileUpdates();
   }
 
@@ -920,6 +979,71 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.app.workspace.getLeavesOfType(PALIMPSEST_VIEW_TYPE).forEach((leaf) => (leaf.view as unknown as SideGrepView).showResults(state, results));
   }
 
+  queryScopePresentation(): QueryScopePresentation {
+    const editor = this.latestMarkdownView?.editor;
+    return this.querySource.presentation(editor?.getSelection() ?? "");
+  }
+
+  querySelectionButton(): void {
+    const view = this.latestMarkdownView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+    const editor = view?.editor;
+    if (!view || !editor) return;
+    this.latestMarkdownView = view;
+    const action = this.querySource.selectionButton(editor.getSelection());
+    if (action.kind === "short-selection") {
+      this.present({ kind: "waiting-input", message: "至少选择 8 个非空白字符" }, this.results);
+      return;
+    }
+    if (action.kind === "follow-enabled") {
+      this.clearQueryTimers();
+      this.queryGate.invalidate();
+      this.present(this.state, this.results);
+      return;
+    }
+    if (action.kind === "follow-disabled") {
+      const schedule = this.lifecycle.sidebarOpened();
+      if (schedule) this.scheduleQueryFromCurrentEditor(schedule, editor, view);
+      return;
+    }
+    // An explicit one-shot query uses a text and buffer snapshot. Its own
+    // selection may subsequently collapse without invalidating the request.
+    this.scheduleResolvedQuery({ immediate: true, reason: "sidebar-open" }, action.source, editor, view);
+  }
+
+  sidebarVisibilityChanged(view: SideGrepView, visible: boolean): void {
+    const changed = this.automaticWork.setVisible(view, visible);
+    if (!changed) return;
+    if (!this.automaticWork.allowed) {
+      this.clearQueryTimers();
+      this.queryGate.invalidate();
+      if (this.updateTimer !== undefined) window.clearTimeout(this.updateTimer);
+      this.updateTimer = undefined;
+      return;
+    }
+    void this.resumeAutomaticWork();
+  }
+
+  /** Resume reconciliation, then queued incremental work, then exactly one current-source query. */
+  private async resumeAutomaticWork(): Promise<void> {
+    if (!this.automaticWork.allowed || this.resumingAutomaticWork) return;
+    this.resumingAutomaticWork = true;
+    try {
+      if (this.reconciliationPending) {
+        const reconciled = await this.reconcileIndexAfterLayout();
+        // A not-ready index has nothing to reconcile; future index completion
+        // will query normally and a plugin restart will request reconciliation.
+        if (reconciled) this.reconciliationPending = false;
+      }
+      if (!this.automaticWork.allowed) return;
+      if (this.pendingVaultChanges.size && !this.isAnyIndexUpdateActive()) await this.flushFileUpdates();
+      if (!this.automaticWork.allowed || this.isAnyIndexUpdateActive()) return;
+      const schedule = this.lifecycle.sidebarOpened();
+      if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
+    } finally {
+      this.resumingAutomaticWork = false;
+    }
+  }
+
   async activateView(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(PALIMPSEST_VIEW_TYPE)[0];
     const leaf: WorkspaceLeaf = existing ?? this.app.workspace.getRightLeaf(false)!;
@@ -930,12 +1054,13 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   sidebarOpened(): void {
+    if (!this.automaticWork.allowed) return;
     const schedule = this.lifecycle.sidebarOpened();
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
   }
 
   refreshCurrentQuery(): void {
-    if (!this.index.isReady(this.indexIdentity()) || this.isBuildActive()) return;
+    if (!this.automaticWork.allowed || !this.index.isReady(this.indexIdentity()) || this.isBuildActive()) return;
     const schedule = this.lifecycle.sidebarOpened();
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule);
   }
