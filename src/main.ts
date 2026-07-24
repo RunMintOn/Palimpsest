@@ -11,6 +11,7 @@ import { buildQueryContext } from "./query-context";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { rankChunks } from "./retrieval";
+import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState } from "./types";
@@ -600,6 +601,14 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       count: this.settings.autoExpandCount,
       thresholdEnabled: this.settings.autoExpandThresholdEnabled,
       threshold: this.settings.autoExpandThreshold
+    };
+  }
+
+  resultExcerptPresentation(): ResultExcerptPresentation {
+    return {
+      fontScale: this.settings.resultExcerptFontScale,
+      lineHeight: this.settings.resultExcerptLineHeight,
+      maxLines: this.settings.resultExcerptMaxLines
     };
   }
 

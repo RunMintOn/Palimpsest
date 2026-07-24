@@ -1,5 +1,34 @@
 import { SearchResult } from "./types";
 
+/** User-facing density settings for rendered result excerpts. */
+export interface ResultExcerptPresentation {
+  fontScale: number;
+  lineHeight: number;
+  /** Zero leaves the excerpt unconstrained. */
+  maxLines: number;
+}
+
+export interface ResultExcerptStyle {
+  fontSize: string;
+  lineHeight: string;
+  maxHeight?: string;
+}
+
+/** Pure DOM-style model; keeping it here makes density behavior testable. */
+export function resultExcerptStyle(
+  presentation: ResultExcerptPresentation,
+  showingFullExcerpt: boolean
+): ResultExcerptStyle {
+  const maxHeight = presentation.maxLines > 0 && !showingFullExcerpt
+    ? `${presentation.maxLines * presentation.lineHeight}em`
+    : undefined;
+  return {
+    fontSize: `${presentation.fontScale}em`,
+    lineHeight: String(presentation.lineHeight),
+    maxHeight
+  };
+}
+
 /** Score-only changes can update in place. A soft refresh is reserved for a
  * visible change in membership, order, source, or excerpt content. */
 export function hasMaterialResultChange(

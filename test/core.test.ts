@@ -13,7 +13,7 @@ import { PersistentIndex } from "../src/persistent-index";
 import { buildQueryContext } from "../src/query-context";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
-import { hasMaterialResultChange } from "../src/result-presentation";
+import { hasMaterialResultChange, resultExcerptStyle } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
 import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults } from "../src/settings-reset";
 import type { SideGrepSettings } from "../src/settings";
@@ -59,7 +59,10 @@ const defaultSettings: SideGrepSettings = {
   embeddingBatchSize: 16,
   autoExpandCount: 3,
   autoExpandThresholdEnabled: false,
-  autoExpandThreshold: 0.3
+  autoExpandThreshold: 0.3,
+  resultExcerptFontScale: 0.92,
+  resultExcerptLineHeight: 1.48,
+  resultExcerptMaxLines: 10
 };
 
 test("Chinese fixture: frontmatter is excluded, headings form breadcrumbs, and line numbers are retained", async () => {
@@ -206,6 +209,18 @@ test("every editable setting maps to the reset control for its own section", () 
   assert.equal(resetSectionForSetting("embeddingBatchSize"), "indexBuild");
   assert.equal(resetSectionForSetting("queryInstruction"), "queryInstruction");
   assert.equal(resetSectionForSetting("excludedDirectories"), "scope");
+  assert.equal(resetSectionForSetting("resultExcerptFontScale"), "appearance");
+});
+
+test("result excerpt density uses relative typography and removes the clamp for full text", () => {
+  const presentation = { fontScale: 0.92, lineHeight: 1.48, maxLines: 10 };
+  assert.deepEqual(resultExcerptStyle(presentation, false), {
+    fontSize: "0.92em", lineHeight: "1.48", maxHeight: "14.8em"
+  });
+  assert.deepEqual(resultExcerptStyle(presentation, true), {
+    fontSize: "0.92em", lineHeight: "1.48", maxHeight: undefined
+  });
+  assert.equal(resultExcerptStyle({ ...presentation, maxLines: 0 }, false).maxHeight, undefined);
 });
 
 test("index scope normalizes multiline paths, separators, empty entries, duplicates, and order", () => {

@@ -7,6 +7,7 @@ export type SettingsResetSection =
   | "chunking"
   | "retrieval"
   | "expansion"
+  | "appearance"
   | "indexBuild"
   | "queryInstruction";
 
@@ -17,6 +18,7 @@ const sectionKeys: Record<SettingsResetSection, readonly (keyof SideGrepSettings
   chunking: ["chunkTargetLength", "chunkMaxLength", "chunkMinLength"],
   retrieval: ["topK", "maxPerFile"],
   expansion: ["autoExpandCount", "autoExpandThresholdEnabled", "autoExpandThreshold"],
+  appearance: ["resultExcerptFontScale", "resultExcerptLineHeight", "resultExcerptMaxLines"],
   indexBuild: ["embeddingBatchSize"],
   queryInstruction: ["queryInstruction"]
 };

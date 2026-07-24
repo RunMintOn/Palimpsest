@@ -1,6 +1,6 @@
 import { ItemView, MarkdownRenderer, setIcon, WorkspaceLeaf } from "obsidian";
 import { ExpansionPolicy, shouldAutoExpand } from "./expansion-policy";
-import { hasMaterialResultChange } from "./result-presentation";
+import { hasMaterialResultChange, ResultExcerptPresentation, resultExcerptStyle } from "./result-presentation";
 import { SearchResult, SidebarState } from "./types";
 
 export const PALIMPSEST_VIEW_TYPE = "palimpsest-sidebar";
@@ -12,6 +12,7 @@ export interface SidebarActions {
   linkMarkup(result: SearchResult): string;
   quoteMarkup(result: SearchResult, selectedText?: string): string;
   expansionPolicy(): ExpansionPolicy;
+  resultExcerptPresentation(): ResultExcerptPresentation;
   rebuildIndex(): Promise<void>;
   cancelIndex(): void;
   refreshCurrentQuery(): void;
@@ -24,9 +25,12 @@ interface ResultCard {
   score: HTMLElement;
   breadcrumb: HTMLElement;
   quote: HTMLElement;
+  excerptToggle: HTMLButtonElement;
   result: SearchResult;
   renderedHash?: string;
   manualExpansion?: boolean;
+  showingFullExcerpt: boolean;
+  excerptOverflow: boolean;
   ignoreNextToggle: boolean;
 }
 
@@ -42,6 +46,7 @@ export class SideGrepView extends ItemView {
   private readonly cards = new Map<string, ResultCard>();
   private resultAnimation: Animation | undefined;
   private expansionPolicyKey = "";
+  private excerptPresentationKey = "";
 
   constructor(leaf: WorkspaceLeaf, private readonly actions: SidebarActions) { super(leaf); }
   getViewType(): string { return PALIMPSEST_VIEW_TYPE; }
@@ -57,6 +62,14 @@ export class SideGrepView extends ItemView {
     if (policyKey !== this.expansionPolicyKey) {
       this.expansionPolicyKey = policyKey;
       for (const card of this.cards.values()) card.manualExpansion = undefined;
+    }
+    const excerptPresentationKey = JSON.stringify(this.actions.resultExcerptPresentation());
+    if (excerptPresentationKey !== this.excerptPresentationKey) {
+      this.excerptPresentationKey = excerptPresentationKey;
+      for (const card of this.cards.values()) {
+        card.showingFullExcerpt = false;
+        card.excerptOverflow = false;
+      }
     }
     const shouldSoften = hasMaterialResultChange(this.results, results);
     this.reconcileResults([...results]);
@@ -206,12 +219,24 @@ export class SideGrepView extends ItemView {
     const breadcrumb = root.createDiv({ cls: "obsdn-side-grep-breadcrumb" });
     const excerpt = root.createDiv({ cls: "obsdn-side-grep-excerpt-wrap" });
     const quote = excerpt.createDiv({ cls: "obsdn-side-grep-excerpt markdown-rendered" });
+    const excerptToggle = excerpt.createEl("button", { text: "显示全文", cls: "obsdn-side-grep-excerpt-toggle" });
     const quoteAction = excerpt.createEl("button", {
       cls: "clickable-icon obsdn-side-grep-card-action obsdn-side-grep-quote-action",
       attr: { "aria-label": "引用片段；拖动可插入引用", title: "引用片段；拖动可插入引用", draggable: "true" }
     });
     setIcon(quoteAction, "quote");
-    const card: ResultCard = { root, file, score, breadcrumb, quote, result, ignoreNextToggle: false };
+    const card: ResultCard = {
+      root,
+      file,
+      score,
+      breadcrumb,
+      quote,
+      excerptToggle,
+      result,
+      showingFullExcerpt: false,
+      excerptOverflow: false,
+      ignoreNextToggle: false
+    };
 
     file.addEventListener("click", (event) => {
       event.preventDefault();
@@ -221,12 +246,17 @@ export class SideGrepView extends ItemView {
     file.addEventListener("dragstart", (event) => this.setDragPayload(event, this.actions.linkMarkup(card.result)));
     quoteAction.addEventListener("click", () => this.actions.insertQuote(card.result, this.selectedExcerpt(card.quote)));
     quoteAction.addEventListener("dragstart", (event) => this.setDragPayload(event, this.actions.quoteMarkup(card.result, this.selectedExcerpt(card.quote))));
+    excerptToggle.addEventListener("click", () => {
+      card.showingFullExcerpt = !card.showingFullExcerpt;
+      this.applyExcerptPresentation(card);
+    });
     root.addEventListener("toggle", () => {
       if (card.ignoreNextToggle) {
         card.ignoreNextToggle = false;
         return;
       }
       card.manualExpansion = root.open;
+      if (root.open) this.queueExcerptOverflowCheck(card);
     });
     return card;
   }
@@ -244,8 +274,11 @@ export class SideGrepView extends ItemView {
       card.renderedHash = result.contentHash;
       card.quote.empty();
       void MarkdownRenderer.render(this.app, result.text, card.quote, result.filePath, this)
-        .catch(() => card.quote.setText(result.text));
+        .catch(() => card.quote.setText(result.text))
+        .finally(() => this.applyExcerptPresentation(card));
     }
+
+    this.applyExcerptPresentation(card);
 
     const autoOpen = shouldAutoExpand(index, result.similarity, this.actions.expansionPolicy());
     const desiredOpen = card.manualExpansion ?? autoOpen;
@@ -253,6 +286,42 @@ export class SideGrepView extends ItemView {
       card.ignoreNextToggle = true;
       card.root.open = desiredOpen;
     }
+    if (card.root.open) this.queueExcerptOverflowCheck(card);
+  }
+
+  private applyExcerptPresentation(card: ResultCard): void {
+    const presentation = this.actions.resultExcerptPresentation();
+    const style = resultExcerptStyle(presentation, card.showingFullExcerpt);
+    card.quote.style.fontSize = style.fontSize;
+    card.quote.style.lineHeight = style.lineHeight;
+    card.quote.style.maxHeight = style.maxHeight ?? "";
+    card.quote.style.overflow = style.maxHeight ? "hidden" : "";
+    if (presentation.maxLines === 0) {
+      card.excerptToggle.style.display = "none";
+      return;
+    }
+    card.excerptToggle.setText(card.showingFullExcerpt ? "收起全文" : "显示全文");
+    card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
+    if (card.root.open) this.queueExcerptOverflowCheck(card);
+  }
+
+  private queueExcerptOverflowCheck(card: ResultCard): void {
+    window.requestAnimationFrame(() => this.refreshExcerptOverflow(card));
+  }
+
+  private refreshExcerptOverflow(card: ResultCard): void {
+    if (!card.root.isConnected || !card.root.open) return;
+    const presentation = this.actions.resultExcerptPresentation();
+    if (presentation.maxLines === 0) {
+      card.excerptOverflow = false;
+      card.excerptToggle.style.display = "none";
+      return;
+    }
+    if (!card.showingFullExcerpt) {
+      card.excerptOverflow = card.quote.scrollHeight > card.quote.clientHeight + 1;
+    }
+    card.excerptToggle.style.display = card.excerptOverflow ? "" : "none";
+    card.excerptToggle.setText(card.showingFullExcerpt ? "收起全文" : "显示全文");
   }
 
   private animateResultRefresh(): void {

@@ -21,6 +21,9 @@ export interface SideGrepSettings {
   autoExpandCount: number;
   autoExpandThresholdEnabled: boolean;
   autoExpandThreshold: number;
+  resultExcerptFontScale: number;
+  resultExcerptLineHeight: number;
+  resultExcerptMaxLines: number;
 }
 
 export const DEFAULT_SETTINGS: SideGrepSettings = {
@@ -40,7 +43,10 @@ export const DEFAULT_SETTINGS: SideGrepSettings = {
   embeddingBatchSize: 16,
   autoExpandCount: 3,
   autoExpandThresholdEnabled: false,
-  autoExpandThreshold: 0.3
+  autoExpandThreshold: 0.3,
+  resultExcerptFontScale: 0.92,
+  resultExcerptLineHeight: 1.48,
+  resultExcerptMaxLines: 10
 };
 
 /** Stored settings may still contain the pre-schema string form. */
@@ -79,11 +85,12 @@ class ExcludedDirectorySuggestModal extends FuzzySuggestModal<TFolder> {
   }
 }
 
-type SettingsPage = "index" | "embedding" | "retrieval";
+type SettingsPage = "index" | "appearance" | "embedding" | "retrieval";
 
 const settingsPages: readonly { id: SettingsPage; label: string }[] = [
   { id: "index", label: "索引" },
-  { id: "embedding", label: "Embedding" },
+  { id: "appearance", label: "外观" },
+  { id: "embedding", label: "模型" },
   { id: "retrieval", label: "检索" }
 ];
 
@@ -102,6 +109,7 @@ export class SideGrepSettingTab extends PluginSettingTab {
     this.resetControlEls.clear();
     this.pageNavigation();
     if (this.activePage === "index") this.indexPage();
+    else if (this.activePage === "appearance") this.appearancePage();
     else if (this.activePage === "embedding") this.embeddingPage();
     else this.retrievalPage();
   }
@@ -141,6 +149,39 @@ export class SideGrepSettingTab extends PluginSettingTab {
     this.text("keep_alive", "5m", "keepAlive");
     this.heading("查询指令", "queryInstruction");
     this.queryInstruction();
+  }
+
+  private appearancePage(): void {
+    this.heading("结果正文", "appearance");
+    new Setting(this.containerEl)
+      .setName("正文字号")
+      .setDesc("只影响侧边栏结果正文，不影响标题和 Obsidian 全局字体")
+      .addDropdown((dropdown) => dropdown
+        .addOption("0.88", "紧凑（88%）")
+        .addOption("0.92", "默认（92%）")
+        .addOption("1", "标准（100%）")
+        .addOption("1.08", "较大（108%）")
+        .setValue(String(this.plugin.settings.resultExcerptFontScale))
+        .onChange(async (value) => this.persistSetting("resultExcerptFontScale", Number(value))));
+    new Setting(this.containerEl)
+      .setName("正文行高")
+      .setDesc("较小行高更紧凑，较大行高更便于连续阅读")
+      .addDropdown((dropdown) => dropdown
+        .addOption("1.4", "紧凑（1.40）")
+        .addOption("1.48", "默认（1.48）")
+        .addOption("1.6", "舒展（1.60）")
+        .setValue(String(this.plugin.settings.resultExcerptLineHeight))
+        .onChange(async (value) => this.persistSetting("resultExcerptLineHeight", Number(value))));
+    new Setting(this.containerEl)
+      .setName("默认显示行数")
+      .setDesc("超过时可在单张卡片中选择显示全文")
+      .addDropdown((dropdown) => dropdown
+        .addOption("6", "6 行")
+        .addOption("10", "10 行")
+        .addOption("15", "15 行")
+        .addOption("0", "不限制")
+        .setValue(String(this.plugin.settings.resultExcerptMaxLines))
+        .onChange(async (value) => this.persistSetting("resultExcerptMaxLines", Number(value))));
   }
 
   private retrievalPage(): void {
