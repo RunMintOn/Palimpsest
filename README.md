@@ -51,7 +51,7 @@ Palimpsest（重写本）是中世纪羊皮纸上的一种书写方式——旧�
 
 ### 前置要求
 
-- [Obsidian](https://obsidian.md) v1.5+
+- [Obsidian](https://obsidian.md) v1.12.0+
 - [Ollama](https://ollama.com) 本地运行
 - Qwen3 Embedding 模型
 
@@ -72,6 +72,8 @@ your-vault/.obsidian/plugins/palimpsest/
 1. 打开右侧 Palimpsest 面板
 2. 点击「建立索引」
 3. 开始写作——相关内容会自动浮现
+
+开发、测试、构建产物同步和恢复流程见 [MAINTENANCE.md](MAINTENANCE.md)。
 
 ---
 
