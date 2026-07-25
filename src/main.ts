@@ -23,6 +23,7 @@ import { planIndexScopeTransition } from "./index-scope-transition";
 import { AutomaticWorkActions, AutomaticWorkCoordinator } from "./automatic-work";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
+import { queryRequestIsCurrent, queryResponseDisposition, type QueryRequestState } from "./query-response-disposition";
 import { isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
 import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
@@ -488,7 +489,12 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     try {
       const response = await this.provider().embedQuery(source.text);
       if (this.modelTimer) window.clearTimeout(this.modelTimer);
-      if (!this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) return;
+      const responseDisposition = queryResponseDisposition(this.queryRequestState(generation, source, editor, view, filePath, scheduledBuffer));
+      if (responseDisposition === "retry-current-buffer" && source.kind === "document") {
+        this.scheduleQueryFromCurrentEditor({ immediate: true, reason: "stale-response" }, editor, view);
+        return;
+      }
+      if (responseDisposition !== "apply") return;
       const results = rankChunks(response.vectors[0], this.index.chunks, {
         topK: this.settings.topK,
         maxPerFile: this.settings.maxPerFile,
@@ -507,13 +513,19 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     }
   }
 
+  private queryRequestState(generation: number, source: QuerySource, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): QueryRequestState {
+    return {
+      automaticWorkAllowed: this.automaticWork.allowed,
+      generationCurrent: this.queryGate.isCurrent(generation),
+      bufferCurrent: editor.getValue() === scheduledBuffer,
+      markdownViewCurrent: this.latestMarkdownView === view,
+      pathCurrent: view.file?.path === filePath,
+      selectionCurrent: source.kind !== "selection-follow" || editor.getSelection() === source.text
+    };
+  }
+
   private isQueryRequestCurrent(generation: number, source: QuerySource, editor: Editor, view: MarkdownView, filePath: string | undefined, scheduledBuffer: string): boolean {
-    if (!this.automaticWork.allowed || !this.queryGate.isCurrent(generation) || editor.getValue() !== scheduledBuffer ||
-      this.latestMarkdownView !== view || view.file?.path !== filePath) return false;
-    // A click-initiated snapshot intentionally survives cursor-only selection
-    // changes. Follow mode instead verifies that its current selection remains
-    // exactly the text that was debounced.
-    return source.kind !== "selection-follow" || editor.getSelection() === source.text;
+    return queryRequestIsCurrent(this.queryRequestState(generation, source, editor, view, filePath, scheduledBuffer));
   }
 
   private clearQueryTimers(): void {

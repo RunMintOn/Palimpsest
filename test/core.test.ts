@@ -14,6 +14,7 @@ import { planIndexReconciliation } from "../src/index-reconciliation";
 import { AutomaticWorkActions, AutomaticWorkCoordinator } from "../src/automatic-work";
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
+import { queryResponseDisposition } from "../src/query-response-disposition";
 import { isValidQueryText, QuerySourceCoordinator } from "../src/query-source";
 import { excerptExpansionControl, hasMaterialResultChange, resultExcerptStyle } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
@@ -496,6 +497,28 @@ test("query gate prevents stale asynchronous completions from winning", async ()
     Promise.resolve().then(() => { if (gate.isCurrent(newer)) completed.push("new"); })
   ]);
   assert.deepEqual(completed, ["new"]);
+});
+
+test("a current file-open query retries when its editor buffer finishes loading after the request starts", () => {
+  assert.equal(queryResponseDisposition({
+    automaticWorkAllowed: true,
+    generationCurrent: true,
+    bufferCurrent: false,
+    markdownViewCurrent: true,
+    pathCurrent: true,
+    selectionCurrent: true
+  }), "retry-current-buffer");
+});
+
+test("a response never retries after a newer query has replaced it", () => {
+  assert.equal(queryResponseDisposition({
+    automaticWorkAllowed: true,
+    generationCurrent: false,
+    bufferCurrent: false,
+    markdownViewCurrent: true,
+    pathCurrent: true,
+    selectionCurrent: true
+  }), "discard");
 });
 
 test("model or dimensions changes make a persisted index incompatible", () => {
