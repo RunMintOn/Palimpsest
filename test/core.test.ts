@@ -15,7 +15,7 @@ import { AutomaticWorkActions, AutomaticWorkCoordinator } from "../src/automatic
 import { QueryGate } from "../src/query-gate";
 import { QueryLifecycleCoordinator } from "../src/query-lifecycle";
 import { queryResponseDisposition } from "../src/query-response-disposition";
-import { isValidQueryText, QuerySourceCoordinator } from "../src/query-source";
+import { currentQuerySelection, isValidQueryText, QuerySourceCoordinator } from "../src/query-source";
 import { excerptExpansionControl, hasMaterialResultChange, resultExcerptStyle } from "../src/result-presentation";
 import { cosineSimilarity, rankChunks } from "../src/retrieval";
 import { resetSectionForSetting, resetSettingsSection, settingsSectionDiffersFromDefaults } from "../src/settings-reset";
@@ -148,6 +148,13 @@ test("query source uses one complete buffer or one complete selection with no lo
   assert.deepEqual(action, { kind: "one-shot", source: { kind: "selection-once", text: selection } });
   assert.equal(isValidQueryText("  一二三四五六七  "), false);
   assert.equal(isValidQueryText("一二三四五六七八"), true);
+});
+
+test("rendered Markdown selection remains queryable when the editor has no selection", () => {
+  const selected = "阅读视图中选中的有效文本";
+  assert.equal(currentQuerySelection("", selected), selected);
+  assert.equal(currentQuerySelection("编辑器选区", undefined), "编辑器选区");
+  assert.equal(currentQuerySelection("编辑器选区", ""), "编辑器选区");
 });
 
 test("selection button distinguishes one-shot, short selection, and follow mode", () => {

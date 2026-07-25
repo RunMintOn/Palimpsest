@@ -15,6 +15,7 @@ export interface SidebarActions {
   expansionPolicy(): ExpansionPolicy;
   resultExcerptPresentation(): ResultExcerptPresentation;
   queryScopePresentation(): QueryScopePresentation;
+  captureQuerySelection(): void;
   querySelectionButton(): void;
   sidebarVisibilityChanged(view: SideGrepView, visible: boolean): void;
   rebuildIndex(): Promise<void>;
@@ -125,6 +126,9 @@ export class SideGrepView extends ItemView {
       attr: { "aria-label": "选中内容查询" }
     });
     setIcon(this.queryScopeButton, "text-select");
+    // Keep the editor's native selection intact until the click handler reads it.
+    this.queryScopeButton.addEventListener("pointerdown", () => this.actions.captureQuerySelection());
+    this.queryScopeButton.addEventListener("pointerdown", (event) => event.preventDefault());
     this.queryScopeButton.addEventListener("click", () => {
       if (!this.queryScopeButton.hasClass("is-following")) {
         this.queryScopeButton.removeClass("is-pulse");

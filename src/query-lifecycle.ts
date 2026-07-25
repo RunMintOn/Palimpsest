@@ -1,4 +1,4 @@
-export type QueryReason = "typing" | "file-open" | "sidebar-open" | "index-ready" | "layout-ready" | "stale-response";
+export type QueryReason = "typing" | "file-open" | "sidebar-open" | "index-ready" | "layout-ready" | "stale-response" | "selection-change";
 export interface QuerySchedule {
   immediate: boolean;
   reason: QueryReason;

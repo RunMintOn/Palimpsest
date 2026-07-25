@@ -22,6 +22,11 @@ export function isValidQueryText(text: string): boolean {
   return text.replace(/\s/g, "").length >= 8;
 }
 
+/** Chooses the selected text exposed by the currently active Markdown surface. */
+export function currentQuerySelection(editorSelection: string, renderedSelection?: string): string {
+  return renderedSelection?.length ? renderedSelection : editorSelection;
+}
+
 /**
  * Owns the difference between the normal document source, an explicit
  * selection snapshot, and persistent follow-selection mode.

@@ -24,7 +24,7 @@ import { AutomaticWorkActions, AutomaticWorkCoordinator } from "./automatic-work
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { queryRequestIsCurrent, queryResponseDisposition, type QueryRequestState } from "./query-response-disposition";
-import { isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
+import { currentQuerySelection, isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
 import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
@@ -54,6 +54,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private readonly automaticWork = new AutomaticWorkCoordinator<SideGrepView>();
   private lifecycle = new QueryLifecycleCoordinator("uninitialized");
   private latestMarkdownView: MarkdownView | undefined;
+  private queryButtonSelection: { view: MarkdownView; text: string } | undefined;
+  private lastFollowSelection: { view: MarkdownView; text: string } | undefined;
   private lastActivatedMarkdownPath: string | undefined;
   private state: SidebarState = { kind: "waiting-input", message: "等待输入" };
   private results: SearchResult[] = [];
@@ -113,6 +115,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.registerEditorExtension(EditorView.updateListener.of((update) => {
       if (update.selectionSet) this.onEditorSelectionChanged(update.view);
     }));
+    this.registerDomEvent(document, "selectionchange", () => this.onRenderedSelectionChanged());
     this.registerEvent(this.app.vault.on("create", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("modify", (file) => this.scheduleFileUpdate(file)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.scheduleFileUpdate(file)));
@@ -393,23 +396,58 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   /** CM6 emits selection-only updates that Obsidian's editor-change omits. */
   private onEditorSelectionChanged(editorView: EditorView): void {
     const markdown = this.latestMarkdownView;
-    if (!markdown?.file || !markdown.contentEl.contains(editorView.dom)) return;
+    const selectionRange = editorView.state.selection.main;
+    const selection = editorView.state.sliceDoc(selectionRange.from, selectionRange.to);
+    const editorBelongsToMarkdown = Boolean(markdown?.file && markdown.contentEl.contains(editorView.dom));
+    if (!editorBelongsToMarkdown || !markdown) return;
+    this.onFollowSelectionChanged(markdown, selection);
+  }
+
+  /** Reading view exposes browser selection, not MarkdownView.editor selection. */
+  private onRenderedSelectionChanged(): void {
+    const markdown = this.latestMarkdownView;
+    if (!markdown?.file) return;
+    const renderedSelection = this.renderedSelection(markdown);
+    if (renderedSelection === undefined) return;
+    const selection = currentQuerySelection(markdown.editor.getSelection(), renderedSelection);
+    this.onFollowSelectionChanged(markdown, selection);
+  }
+
+  private onFollowSelectionChanged(markdown: MarkdownView, selection: string): void {
     if (!this.querySource.isFollowingSelection) {
+      this.lastFollowSelection = undefined;
       this.present(this.state, this.results);
       return;
     }
+    if (isValidQueryText(selection) && this.lastFollowSelection?.view === markdown && this.lastFollowSelection.text === selection) return;
     this.clearQueryTimers();
     this.queryGate.invalidate();
-    const selection = markdown.editor.getSelection();
     if (!isValidQueryText(selection)) {
-      if (this.automaticWork.allowed) this.present(this.state, this.results);
+      this.lastFollowSelection = undefined;
+      if (this.automaticWork.allowed) this.present({ kind: "waiting-input", message: "等待选择" }, this.results);
       return;
     }
+    this.lastFollowSelection = { view: markdown, text: selection };
     if (!this.automaticWork.allowed) return;
-    this.scheduleResolvedQuery({ immediate: false, reason: "typing" }, {
+    this.scheduleResolvedQuery({ immediate: true, reason: "selection-change" }, {
       kind: "selection-follow",
       text: selection
     }, markdown.editor, markdown);
+  }
+
+  /** Returns undefined when the browser selection belongs to another Obsidian view. */
+  private renderedSelection(view: MarkdownView): string | undefined {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return undefined;
+    const range = selection.getRangeAt(0);
+    const root = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer as Element
+      : range.commonAncestorContainer.parentElement;
+    return root && view.contentEl.contains(root) ? selection.toString() : undefined;
+  }
+
+  private selectedQueryText(view: MarkdownView): string {
+    return currentQuerySelection(view.editor.getSelection(), this.renderedSelection(view));
   }
 
   private onFileOpen(file: TFile | null): void {
@@ -438,7 +476,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const view = suppliedView ?? this.latestMarkdownView;
     const editor = suppliedEditor ?? view?.editor;
     if (!view || !editor) return;
-    const source = this.querySource.sourceForCurrentSelection(editor.getValue(), editor.getSelection());
+    const source = this.querySource.sourceForCurrentSelection(editor.getValue(), this.selectedQueryText(view));
     if (!source) {
       this.clearQueryTimers();
       this.queryGate.invalidate();
@@ -520,7 +558,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       bufferCurrent: editor.getValue() === scheduledBuffer,
       markdownViewCurrent: this.latestMarkdownView === view,
       pathCurrent: view.file?.path === filePath,
-      selectionCurrent: source.kind !== "selection-follow" || editor.getSelection() === source.text
+      selectionCurrent: source.kind !== "selection-follow" || this.selectedQueryText(view) === source.text
     };
   }
 
@@ -1008,27 +1046,38 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   queryScopePresentation(): QueryScopePresentation {
-    const editor = this.latestMarkdownView?.editor;
-    return this.querySource.presentation(editor?.getSelection() ?? "");
+    const view = this.latestMarkdownView;
+    return this.querySource.presentation(view ? this.selectedQueryText(view) : "");
+  }
+
+  /** Captures before a toolbar click can make Obsidian collapse the editor selection. */
+  captureQuerySelection(): void {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView) ?? this.latestMarkdownView;
+    this.queryButtonSelection = view ? { view, text: this.selectedQueryText(view) } : undefined;
   }
 
   querySelectionButton(): void {
-    const view = this.latestMarkdownView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
+    const captured = this.queryButtonSelection;
+    this.queryButtonSelection = undefined;
+    const view = captured?.view ?? this.latestMarkdownView ?? this.app.workspace.getActiveViewOfType(MarkdownView);
     const editor = view?.editor;
     if (!view || !editor) return;
     this.latestMarkdownView = view;
-    const action = this.querySource.selectionButton(editor.getSelection());
+    const selection = captured?.view === view ? captured.text : this.selectedQueryText(view);
+    const action = this.querySource.selectionButton(selection);
     if (action.kind === "short-selection") {
       this.present({ kind: "waiting-input", message: "至少选择 8 个非空白字符" }, this.results);
       return;
     }
     if (action.kind === "follow-enabled") {
+      this.lastFollowSelection = undefined;
       this.clearQueryTimers();
       this.queryGate.invalidate();
       this.present(this.state, this.results);
       return;
     }
     if (action.kind === "follow-disabled") {
+      this.lastFollowSelection = undefined;
       const schedule = this.lifecycle.sidebarOpened();
       if (schedule) this.scheduleQueryFromCurrentEditor(schedule, editor, view);
       return;
