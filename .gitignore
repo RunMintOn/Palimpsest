@@ -8,3 +8,4 @@ prototypes/
 docs/
 data.json
 data.*.backup.json
+tools/find-papercuts.ps1
