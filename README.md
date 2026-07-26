@@ -1,148 +1,204 @@
 # Palimpsest
-![alt text](image.png)
+[中文版](README.zh-CN.md)
+
+![](image.png)
+
 **Palimpsest — an Obsidian side channel to your past**
 
-Palimpsest 是一个 Obsidian 插件。它不会等你搜索——它会安静地守在你的右侧，在你写作时让旧笔记自动浮现。
+Palimpsest is an Obsidian plugin that quietly watches from the right side of
+your workspace and brings older notes back into view while you write.
 
 ---
 
-## 它与普通搜索有什么不同？
+## How is it different from ordinary search?
 
-| | 普通搜索 | Palimpsest |
+| | Ordinary search | Palimpsest |
 |---|---|---|
-| 谁发起 | 你 | 它 |
-| 什么时候 | 你想起来去搜的时候 | 你正在写的时候 |
-| 查什么 | 你输入的关键词 | 当前笔记全文的语义 |
-| 结果 | 文件名列表 | 相关原文片段，渲染后展示 |
+| Who starts it | You | It does |
+| When | When you remember to search | While you are writing |
+| What it searches | Keywords you enter | The semantics of the current note |
+| Results | A list of file names | Relevant source passages, rendered for reading |
 
-你过去写的内容不是在等待被搜索，而是在等待被重新发现。Palimpsest 让这件事自然发生。
-
----
-
-## 它是怎么工作的？
-
-Palimpsest 的工作流程：
-
-1. **建立索引**：首次使用时，把 vault 中的每篇笔记按标题和段落切分成知识片段，对每个片段调用 embedding 模型生成向量，保存到本地索引。
-2. **实时检索**：你在写作时停笔约 800ms，插件会把当前笔记的完整实时内容作为一个 embedding 查询，然后在索引中做相似度搜索——找到与之语义最接近的旧片段。
-3. **展示结果**：匹配到的片段按相似度排序显示在右侧边栏。点击可打开原文，拖动可插入链接或引用。
-
-整个过程全部在本地完成，不经过云端。
-
-第一次建库的速度取决于你的 vault 大小。如果笔记较多，全量索引可能需要几分钟。这是一次性成本——之后新增和修改的笔记会自动增量更新，不需要手动重建。移动文件或文件夹会复用已有向量；改文件名、标题或正文时会更新受影响的向量。查询范围的变化不影响索引，不需要重建。
-
-Palimpsest 只在至少一个实际可见的侧边栏面板存在时自动查询和自动处理增量索引。折叠右侧栏、切换到其他侧栏标签或关闭面板后，它会保留结果并暂停这些自动工作；期间的 vault 变化仍会合并入队，重新显示后先补齐增量索引，再按当前查询范围检索。
-
-### 本地索引
-
-插件设置与向量索引分开保存：设置保持为小型插件数据，索引保存在本机 Obsidian 应用数据的 IndexedDB 中。因此索引不会随 vault 文件夹复制；如果清理 Obsidian 应用数据，需要重新建立索引。可以在“设置 → Palimpsest → 索引”查看文档/片段数量，并清除**当前 vault** 的本地索引。清除不会删除 Markdown 笔记、插件设置或 vault 身份。
+Your past writing is not waiting to be searched. It is waiting to be
+rediscovered. Palimpsest makes that happen naturally.
 
 ---
 
-## 为什么叫 Palimpsest？
+## How does it work?
 
-Palimpsest（重写本）是中世纪羊皮纸上的一种书写方式——旧字迹被刮去后覆写新内容，但岁月流逝，底层隐约的旧文字依然能被辨认。
+Palimpsest works in three stages:
 
-你的知识库也是一样。新笔记覆盖旧笔记，旧想法被新想法掩埋。但它们在，只是看不见了。Palimpsest 让旧字迹重新浮现。
+1. **Build an index**: On first use, it splits each note in your vault into
+   knowledge passages by headings and paragraphs, generates an embedding for
+   each passage, and stores the vectors in a local index.
+2. **Search while you write**: After you stop typing for about 800 ms, the
+   plugin uses the complete current note as an embedding query and searches
+   for the semantically closest older passages.
+3. **Show the results**: Matching passages are sorted by similarity and shown
+   in the right sidebar. Click a result to open the source note, or drag it to
+   insert a link or quotation.
+
+Everything runs locally and does not pass through a cloud service.
+
+The initial indexing time depends on the size of your vault. A larger vault
+may take several minutes to index. This is a one-time cost: new and changed
+notes are updated incrementally afterward, without a manual rebuild. Moving a
+file or folder reuses existing vectors; changing a file name, heading, or
+body updates the affected vectors. Changing the query scope does not affect
+the index and does not require a rebuild.
+
+Palimpsest only runs automatic queries and automatic incremental indexing
+while at least one sidebar panel is actually visible. When the right sidebar
+is collapsed, you switch to another sidebar tab, or you close the panel,
+Palimpsest keeps the existing results and pauses this automatic work. Vault
+changes during that time are coalesced into a queue. When the panel becomes
+visible again, Palimpsest first catches up on incremental indexing and then
+searches using the current query scope.
+
+### Local index
+
+Plugin settings and vector indexes are stored separately. Settings remain
+small plugin data, while the index is stored in IndexedDB in Obsidian's local
+application data. The index therefore does not travel with a copied vault
+folder. If Obsidian's application data is cleared, the index must be rebuilt.
+You can view document and passage counts under **Settings → Palimpsest →
+Index**, and clear the local index for the **current vault**. Clearing it does
+not delete Markdown notes, plugin settings, or the vault identity.
 
 ---
 
-## 快速开始
+## Why “Palimpsest”?
 
-### 前置要求
+A palimpsest was a medieval writing surface on which old writing was scraped
+away and overwritten. Over time, the underlying text could still be made out.
+
+Your knowledge base is similar. New notes cover old notes, and old ideas are
+buried beneath newer ones. They are still there; they are simply harder to
+see. Palimpsest brings those old traces back into view.
+
+---
+
+## Quick start
+
+### Requirements
 
 - [Obsidian](https://obsidian.md) v1.12.0+
-- [Ollama](https://ollama.com) 本地运行
-- Qwen3 Embedding 模型
+- [Ollama](https://ollama.com) running locally
+- A Qwen3 Embedding model
 
 ```bash
 ollama pull qwen3-embedding:0.6b
 ```
 
-### 安装
+### Installation
 
-下载 `main.js`、`manifest.json`、`styles.css` 放入你的 vault 插件目录，然后在 Obsidian 中启用。
+Copy `main.js`, `manifest.json`, and `styles.css` into your vault's plugin
+directory, then enable the plugin in Obsidian.
 
 ```
 your-vault/.obsidian/plugins/palimpsest/
 ```
 
-### 首次使用
+### First use
 
-1. 打开右侧 Palimpsest 面板
-2. 点击「建立索引」
-3. 开始写作——相关内容会自动浮现
+1. Open the Palimpsest panel in the right sidebar.
+2. Click **Build index**.
+3. Start writing; relevant material will appear automatically.
 
-开发、测试、构建产物同步和恢复流程见 [MAINTENANCE.md](MAINTENANCE.md)。
-
----
-
-## 功能
-
-- **当前笔记全文检索**：停笔约 800ms 后，将当前 Markdown 编辑器完整 buffer 作为一个语义查询
-- **选中内容查询**：工具栏的选区按钮可对有效选区（至少 8 个非空白字符）立即执行一次性查询；无选区时进入跟随选区模式，再次点击退出并恢复全文查询
-- **知识片段召回**：以相关段落为单位展示，而非整篇笔记
-- **Markdown 渲染**：原文中的粗体、列表、引用、代码块和内部链接都会正常渲染
-- **点击打开来源**：点击标题跳转到原文件对应行
-- **拖动插入链接 / 引用**：拖动标题插入 Obsidian 链接，拖动引用图标插入引用块
-- **展开策略**：默认展开前三项；支持设置折叠数量、相似度阈值；手动操作优先保留
-- **本地运行**：全部在本地完成，不调用云端 API
-- **本机 IndexedDB 索引**：设置不会重写向量；全量重建完成前继续使用现有索引
-- **可见性休眠**：侧边栏不可见时暂停自动查询和自动增量 embedding，重新可见时以增量方式补齐
+See [MAINTENANCE.md](MAINTENANCE.md) for development, testing, build artifact
+synchronization, and recovery procedures.
 
 ---
 
-## 设置
+## Features
 
-| 设置项 | 默认值 | 说明 |
+- **Full-note queries**: After about 800 ms of inactivity, the complete current
+  Markdown editor buffer is used as a semantic query.
+- **Selection queries**: The selection button immediately runs a one-shot query
+  for a valid selection of at least 8 non-whitespace characters. With no
+  selection, it enters follow-selection mode; click again to exit and return
+  to full-note queries.
+- **Passage retrieval**: Shows relevant passages instead of entire notes.
+- **Markdown rendering**: Bold text, lists, blockquotes, code blocks, and
+  internal links render correctly in source passages.
+- **Open the source**: Click a result title to jump to the corresponding line
+  in the source file.
+- **Drag to insert links or quotations**: Drag a title to insert an Obsidian
+  link, or drag the quotation icon to insert a quote block.
+- **Expansion policy**: The first three results are expanded by default.
+  You can configure the number of expanded results and the similarity
+  threshold; manual actions take priority.
+- **Local operation**: Everything runs locally; no cloud API is called.
+- **Local IndexedDB index**: Settings changes do not rewrite vectors. The
+  existing index remains usable until a full rebuild completes.
+- **Visibility-aware sleep**: Automatic queries and incremental embeddings
+  pause while the sidebar is hidden and catch up incrementally when it becomes
+  visible again.
+
+---
+
+## Settings
+
+| Setting | Default | Description |
 |---|---|---|
 | Ollama endpoint | `http://127.0.0.1:11434/api/embed` | |
-| 模型 | `qwen3-embedding:0.6b` | |
-| 向量维度 | 1024 | 改变后需重建索引 |
-| 查询 debounce | 800 ms | 停止输入后多久开始查询 |
-| 默认展开结果 | 前 3 个 | 可选全部折叠、前 1/3/5 个、全部展开 |
-| 自动展开最低相似度 | 关闭 | 开启后低于阈值的结果不自动展开 |
-| 片段目标长度 | 650 字符 | |
-| 排除目录 | `.obsidian` | 逗号分隔 |
+| Model | `qwen3-embedding:0.6b` | |
+| Vector dimensions | 1024 | Changing this requires a rebuild |
+| Query debounce | 800 ms | Delay after typing stops |
+| Default expanded results | First 3 | Options include all collapsed, first 1/3/5, or all expanded |
+| Minimum similarity for auto-expansion | Off | When enabled, results below the threshold are not expanded automatically |
+| Target passage length | 650 characters | |
+| Excluded directories | `.obsidian` | Comma-separated |
 
 ---
 
-## 技术栈
+## Technology
 
-- **编辑器端**：TypeScript + Obsidian API
-- **向量模型**：Qwen3-Embedding-0.6B（GGUF Q8_0，1024 维）
-- **检索后端**：Ollama 本地服务
-- **索引**：基于 Markdown 标题和段落切分 + 余弦相似度
+- **Editor**: TypeScript + Obsidian API
+- **Embedding model**: Qwen3-Embedding-0.6B (GGUF Q8_0, 1024 dimensions)
+- **Retrieval backend**: Local Ollama service
+- **Index**: Markdown heading and paragraph splitting + cosine similarity
 
-### 资源占用（Qwen3-Embedding-0.6B）
+### Resource usage (Qwen3-Embedding-0.6B)
 
-| 资源 | 实测值 |
+| Resource | Measured value |
 |---|---|
-| 显存（模型本身） | ~2.2 GiB |
-| 系统内存（llama-server 私有） | ~3 GiB |
-| 冷启动首次查询 | ~2.7 s |
-| 预热后查询 | ~150 ms |
+| GPU memory (model only) | ~2.2 GiB |
+| System memory (private `llama-server`) | ~3 GiB |
+| First cold-start query | ~2.7 s |
+| Warm query | ~150 ms |
 
-可选的更小模型：
+### Other models (additional setup required)
 
-`jina-embeddings-v2-base-zh`（161M 参数，109 MB Q4_K_M，768 维，中英双语）
-在中英文质量与资源占用之间更均衡。
-用户在设置页直接修改模型名和维度即可切换。
+[Jina Embeddings v2 Base - Chinese](https://huggingface.co/jinaai/jina-embeddings-v2-base-zh)
+is a bilingual Chinese-English embedding model with 768 dimensions. The
+original model on Hugging Face cannot be entered directly as an Ollama model
+name: you must first prepare an Ollama-compatible GGUF file. You can refer to
+this [third-party Q4_K_M conversion](https://huggingface.co/Ashcomposer/jina-embeddings-v2-base-zh-Q4_K_M-GGUF)
+(about 109 MB) and [Ollama's import instructions](https://docs.ollama.com/import):
+
+```text
+# Modelfile
+FROM /path/to/jina-embeddings-v2-base-zh-q4_k_m.gguf
+```
+
+```bash
+ollama create palimpsest-jina-zh -f Modelfile
+```
+
+Then enter the following in Palimpsest settings:
+
+- Model name: `palimpsest-jina-zh` (the name used with `ollama create`)
+- Vector dimensions: `768`
+- Rebuild the index after changing the model or dimensions
+
+The plugin's default query instruction format is tailored to Qwen3. Jina's
+official usage does not use the `Instruct:` / `Query:` prefix, so Jina should
+currently be treated as an alternative that requires validation rather than
+as a guaranteed equivalent model that works after changing settings alone.
 
 ---
 
-## 项目状态
+## License
 
-功能完整的原型。核心使用体验已经明确，UI 和交互也基本确定。
-
-已知限制：
-
-- 检索使用暴力余弦搜索，适合中小型 vault（约 1 万片段以下）
-- chunker 不处理表格、代码块内部的复杂 Markdown AST
-- 已发出的 HTTP 请求不会中断，但返回结果不会覆盖新查询
-
----
-
-## 许可
-
-仅供学习和个人使用。
+This project is licensed under the [MIT License](LICENSE).

@@ -1,0 +1,160 @@
+# Palimpsest
+
+[English](README.md)
+
+![](image.png)
+**Palimpsest — an Obsidian side channel to your past**
+
+Palimpsest 是一个 Obsidian 插件。它不会等你搜索——它会安静地守在你的右侧，在你写作时让旧笔记自动浮现。
+
+---
+
+## 它与普通搜索有什么不同？
+
+| | 普通搜索 | Palimpsest |
+|---|---|---|
+| 谁发起 | 你 | 它 |
+| 什么时候 | 你想起来去搜的时候 | 你正在写的时候 |
+| 查什么 | 你输入的关键词 | 当前笔记全文的语义 |
+| 结果 | 文件名列表 | 相关原文片段，渲染后展示 |
+
+你过去写的内容不是在等待被搜索，而是在等待被重新发现。Palimpsest 让这件事自然发生。
+
+---
+
+## 它是怎么工作的？
+
+Palimpsest 的工作流程：
+
+1. **建立索引**：首次使用时，把 vault 中的每篇笔记按标题和段落切分成知识片段，对每个片段调用 embedding 模型生成向量，保存到本地索引。
+2. **实时检索**：你在写作时停笔约 800ms，插件会把当前笔记的完整实时内容作为一个 embedding 查询，然后在索引中做相似度搜索——找到与之语义最接近的旧片段。
+3. **展示结果**：匹配到的片段按相似度排序显示在右侧边栏。点击可打开原文，拖动可插入链接或引用。
+
+整个过程全部在本地完成，不经过云端。
+
+第一次建库的速度取决于你的 vault 大小。如果笔记较多，全量索引可能需要几分钟。这是一次性成本——之后新增和修改的笔记会自动增量更新，不需要手动重建。移动文件或文件夹会复用已有向量；改文件名、标题或正文时会更新受影响的向量。查询范围的变化不影响索引，不需要重建。
+
+Palimpsest 只在至少一个实际可见的侧边栏面板存在时自动查询和自动处理增量索引。折叠右侧栏、切换到其他侧栏标签或关闭面板后，它会保留结果并暂停这些自动工作；期间的 vault 变化仍会合并入队，重新显示后先补齐增量索引，再按当前查询范围检索。
+
+### 本地索引
+
+插件设置与向量索引分开保存：设置保持为小型插件数据，索引保存在本机 Obsidian 应用数据的 IndexedDB 中。因此索引不会随 vault 文件夹复制；如果清理 Obsidian 应用数据，需要重新建立索引。可以在“设置 → Palimpsest → 索引”查看文档/片段数量，并清除**当前 vault** 的本地索引。清除不会删除 Markdown 笔记、插件设置或 vault 身份。
+
+---
+
+## 为什么叫 Palimpsest？
+
+Palimpsest（重写本）是中世纪羊皮纸上的一种书写方式——旧字迹被刮去后覆写新内容，但岁月流逝，底层隐约的旧文字依然能被辨认。
+
+你的知识库也是一样。新笔记覆盖旧笔记，旧想法被新想法掩埋。但它们在，只是看不见了。Palimpsest 让旧字迹重新浮现。
+
+---
+
+## 快速开始
+
+### 前置要求
+
+- [Obsidian](https://obsidian.md) v1.12.0+
+- [Ollama](https://ollama.com) 本地运行
+- Qwen3 Embedding 模型
+
+```bash
+ollama pull qwen3-embedding:0.6b
+```
+
+### 安装
+
+下载 `main.js`、`manifest.json`、`styles.css` 放入你的 vault 插件目录，然后在 Obsidian 中启用。
+
+```
+your-vault/.obsidian/plugins/palimpsest/
+```
+
+### 首次使用
+
+1. 打开右侧 Palimpsest 面板
+2. 点击「建立索引」
+3. 开始写作——相关内容会自动浮现
+
+开发、测试、构建产物同步和恢复流程见 [MAINTENANCE.md](MAINTENANCE.md)。
+
+---
+
+## 功能
+
+- **当前笔记全文检索**：停笔约 800ms 后，将当前 Markdown 编辑器完整 buffer 作为一个语义查询
+- **选中内容查询**：工具栏的选区按钮可对有效选区（至少 8 个非空白字符）立即执行一次性查询；无选区时进入跟随选区模式，再次点击退出并恢复全文查询
+- **知识片段召回**：以相关段落为单位展示，而非整篇笔记
+- **Markdown 渲染**：原文中的粗体、列表、引用、代码块和内部链接都会正常渲染
+- **点击打开来源**：点击标题跳转到原文件对应行
+- **拖动插入链接 / 引用**：拖动标题插入 Obsidian 链接，拖动引用图标插入引用块
+- **展开策略**：默认展开前三项；支持设置折叠数量、相似度阈值；手动操作优先保留
+- **本地运行**：全部在本地完成，不调用云端 API
+- **本机 IndexedDB 索引**：设置不会重写向量；全量重建完成前继续使用现有索引
+- **可见性休眠**：侧边栏不可见时暂停自动查询和自动增量 embedding，重新可见时以增量方式补齐
+
+---
+
+## 设置
+
+| 设置项 | 默认值 | 说明 |
+|---|---|---|
+| Ollama endpoint | `http://127.0.0.1:11434/api/embed` | |
+| 模型 | `qwen3-embedding:0.6b` | |
+| 向量维度 | 1024 | 改变后需重建索引 |
+| 查询 debounce | 800 ms | 停止输入后多久开始查询 |
+| 默认展开结果 | 前 3 个 | 可选全部折叠、前 1/3/5 个、全部展开 |
+| 自动展开最低相似度 | 关闭 | 开启后低于阈值的结果不自动展开 |
+| 片段目标长度 | 650 字符 | |
+| 排除目录 | `.obsidian` | 逗号分隔 |
+
+---
+
+## 技术栈
+
+- **编辑器端**：TypeScript + Obsidian API
+- **向量模型**：Qwen3-Embedding-0.6B（GGUF Q8_0，1024 维）
+- **检索后端**：Ollama 本地服务
+- **索引**：基于 Markdown 标题和段落切分 + 余弦相似度
+
+### 资源占用（Qwen3-Embedding-0.6B）
+
+| 资源 | 实测值 |
+|---|---|
+| 显存（模型本身） | ~2.2 GiB |
+| 系统内存（llama-server 私有） | ~3 GiB |
+| 冷启动首次查询 | ~2.7 s |
+| 预热后查询 | ~150 ms |
+
+其他模型（需额外配置）：
+
+[Jina Embeddings v2 Base - Chinese](https://huggingface.co/jinaai/jina-embeddings-v2-base-zh)
+是一个 768 维的中英双语 embedding 模型。Hugging Face 上的原始模型不能直接
+填入 Ollama 的“模型名称”使用：需要先准备一个 Ollama 可导入的 GGUF 文件。
+可以参考这个[第三方 Q4_K_M 转换版本](https://huggingface.co/Ashcomposer/jina-embeddings-v2-base-zh-Q4_K_M-GGUF)
+（约 109 MB）以及 [Ollama 的导入说明](https://docs.ollama.com/import)：
+
+```text
+# Modelfile
+FROM /path/to/jina-embeddings-v2-base-zh-q4_k_m.gguf
+```
+
+```bash
+ollama create palimpsest-jina-zh -f Modelfile
+```
+
+然后在 Palimpsest 设置中填写：
+
+- 模型名称：`palimpsest-jina-zh`（`ollama create` 使用的名称）
+- 向量维度：`768`
+- 修改模型或维度后，重新建立索引
+
+当前插件默认的查询指令格式针对 Qwen3；Jina 的官方用法不使用这套
+`Instruct:` / `Query:` 前缀，因此它目前应视为需要自行验证的替代方案，
+而不是修改设置后即可保证等价工作的模型。
+
+---
+
+## 许可
+
+本项目采用 [MIT License](LICENSE)。

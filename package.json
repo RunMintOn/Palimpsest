@@ -2,6 +2,7 @@
   "name": "palimpsest",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Prototype Obsidian sidebar for live local semantic passage retrieval",
   "scripts": {
     "typecheck": "tsc --noEmit",
