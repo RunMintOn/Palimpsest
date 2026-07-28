@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { planVaultChanges, VaultChangeQueue } from "../src/vault-change-plan";
+import { indexRelevantVaultChange, planVaultChanges, VaultChangeQueue } from "../src/vault-change-plan";
 
 const included = (path: string) => !path.startsWith("Archive/");
 
@@ -77,4 +77,18 @@ test("restoring a failed batch keeps it ahead of new events without an automatic
     { kind: "path", path: "failed.md" },
     { kind: "rename", oldPath: "old.md", newPath: "new.md", isFolder: false }
   ]);
+});
+
+test("only Markdown file events and every folder event enter the index update queue", () => {
+  assert.equal(indexRelevantVaultChange({ kind: "path", path: "Boards/overview.canvas" }), false);
+  assert.equal(indexRelevantVaultChange({ kind: "path", path: "Views/notes.base" }), false);
+  assert.equal(indexRelevantVaultChange({ kind: "path", path: "Notes/entry.md" }), true);
+  assert.equal(indexRelevantVaultChange({ kind: "folder-delete", path: "Notes" }), true);
+});
+
+test("renames enter the index update queue whenever either file endpoint is Markdown", () => {
+  assert.equal(indexRelevantVaultChange({ kind: "rename", oldPath: "Boards/overview.canvas", newPath: "Boards/archive.canvas", isFolder: false }), false);
+  assert.equal(indexRelevantVaultChange({ kind: "rename", oldPath: "Notes/entry.md", newPath: "Boards/entry.canvas", isFolder: false }), true);
+  assert.equal(indexRelevantVaultChange({ kind: "rename", oldPath: "Boards/entry.canvas", newPath: "Notes/entry.md", isFolder: false }), true);
+  assert.equal(indexRelevantVaultChange({ kind: "rename", oldPath: "Old", newPath: "New", isFolder: true }), true);
 });

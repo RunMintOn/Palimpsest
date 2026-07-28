@@ -3,6 +3,17 @@ export type VaultChange =
   | { kind: "folder-delete"; path: string }
   | { kind: "rename"; oldPath: string; newPath: string; isFolder: boolean };
 
+function isMarkdownPath(path: string): boolean {
+  return path.endsWith(".md");
+}
+
+/** Keeps non-Markdown files from waking the incremental-index pipeline. */
+export function indexRelevantVaultChange(change: VaultChange): boolean {
+  if (change.kind === "folder-delete") return true;
+  if (change.kind === "path") return isMarkdownPath(change.path);
+  return change.isFolder || isMarkdownPath(change.oldPath) || isMarkdownPath(change.newPath);
+}
+
 export interface VaultChangePlanInput {
   changes: readonly VaultChange[];
   /** Includes empty documents, not merely paths which currently have chunks. */

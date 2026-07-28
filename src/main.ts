@@ -31,7 +31,7 @@ import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSe
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
 import { CHUNKER_VERSION, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState, SkippedIndexedDocument } from "./types";
 import { ensureVaultIdentity } from "./vault-identity";
-import { planVaultChanges, VaultChange, VaultChangeQueue } from "./vault-change-plan";
+import { indexRelevantVaultChange, planVaultChanges, VaultChange, VaultChangeQueue } from "./vault-change-plan";
 
 /** Read-only index-scope state intended for settings and other UI consumers. */
 export interface IndexScopeView {
@@ -574,11 +574,15 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private scheduleFileUpdate(file: TAbstractFile): void {
-    this.queueVaultChange(file instanceof TFolder ? { kind: "folder-delete", path: file.path } : { kind: "path", path: file.path });
+    const change: VaultChange = file instanceof TFolder
+      ? { kind: "folder-delete", path: file.path }
+      : { kind: "path", path: file.path };
+    if (indexRelevantVaultChange(change)) this.queueVaultChange(change);
   }
 
   private scheduleRename(file: TAbstractFile, oldPath: string): void {
-    this.queueVaultChange({ kind: "rename", oldPath, newPath: file.path, isFolder: file instanceof TFolder });
+    const change: VaultChange = { kind: "rename", oldPath, newPath: file.path, isFolder: file instanceof TFolder };
+    if (indexRelevantVaultChange(change)) this.queueVaultChange(change);
   }
 
   private queueVaultChange(change: VaultChange): void {
