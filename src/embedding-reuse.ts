@@ -15,6 +15,19 @@ export function sameEmbeddingInput(
     left.breadcrumb.every((heading, index) => heading === right.breadcrumb[index]);
 }
 
+/** Compares a document's embedding inputs as a multiset, ignoring line positions and chunk IDs. */
+export function sameEmbeddingInputs(
+  left: readonly Pick<Chunk, "fileName" | "breadcrumb" | "text">[],
+  right: readonly Pick<Chunk, "fileName" | "breadcrumb" | "text">[]
+): boolean {
+  if (left.length !== right.length) return false;
+  const counts = new Map<string, number>();
+  const key = (chunk: Pick<Chunk, "fileName" | "breadcrumb" | "text">) => JSON.stringify([chunk.fileName, chunk.breadcrumb, chunk.text]);
+  for (const chunk of left) counts.set(key(chunk), (counts.get(key(chunk)) ?? 0) + 1);
+  for (const chunk of right) counts.set(key(chunk), (counts.get(key(chunk)) ?? 0) - 1);
+  return [...counts.values()].every((count) => count === 0);
+}
+
 /** Hash lookup is only a candidate filter; exact fields decide whether a vector is reusable. */
 export class EmbeddingReuseLookup {
   private readonly candidates = new Map<string, IndexedChunk[]>();

@@ -1,10 +1,10 @@
 import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf, requestUrl } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import { embeddingText } from "./chunker";
-import { embeddingInputHash } from "./embedding-reuse";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
 import { BulkIndexUpdateDeferral } from "./bulk-index-update-deferral";
 import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
+import { embeddingInputHash } from "./embedding-reuse";
 import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build-flow";
 import { confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
@@ -13,7 +13,7 @@ import { PersistentIndex, sameIdentity } from "./persistent-index";
 import { createIndexStore, IndexDocument, IndexStore } from "./index-store";
 import { indexLoadRecoveryMessage } from "./index-load-feedback";
 import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
-import { executeIncrementalIndexPlan, IncrementalChangeSummary, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "./incremental-index-plan";
+import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan, summarizeIncrementalChanges } from "./incremental-index-plan";
 import { completionActions } from "./index-update-coordination";
 import { runIndexReconciliation } from "./index-reconciliation";
 import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
@@ -900,7 +900,15 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       deletes: plan.deletes,
       reusableChunks: this.index.chunks,
       current,
-      changes: this.incrementalChangeSummary(changes, plan.upsertPaths, plan.deletes)
+      changes: summarizeIncrementalChanges({
+        changes,
+        upsertPaths: plan.upsertPaths,
+        deletes: plan.deletes,
+        indexedDocumentPaths: this.index.documentPaths,
+        indexedChunks: this.index.chunks,
+        documents: scanned.documents,
+        skippedDocuments: scanned.skippedDocuments
+      })
     });
     if (!prepared.summary.documents && !plan.deletes.length) return false;
     const outcome = await runPreparedIncrementalIndexUpdate({
@@ -952,22 +960,6 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       !sameIndexScope(this.desiredIndexScope(), desiredScope)) {
       throw new Error("Prepared index scope update is stale; apply it again");
     }
-  }
-
-  private incrementalChangeSummary(changes: readonly VaultChange[], upserts: readonly string[], deletes: readonly string[]): IncrementalChangeSummary {
-    const indexed = new Set(this.index.documentPaths);
-    const renamePaths = new Set<string>();
-    for (const change of changes) {
-      if (change.kind !== "rename") continue;
-      if (!change.isFolder) renamePaths.add(change.newPath);
-      else {
-        const prefix = `${change.newPath}/`;
-        for (const path of upserts) if (path === change.newPath || path.startsWith(prefix)) renamePaths.add(path);
-      }
-    }
-    const added = upserts.filter((path) => !indexed.has(path) && !renamePaths.has(path)).length;
-    const renamed = upserts.filter((path) => renamePaths.has(path)).length;
-    return { added, renamed, modified: upserts.length - added - renamed, deleted: deletes.length };
   }
 
   private async scanIncrementalDocuments(files: readonly TFile[]): Promise<{ documents: ScannedIndexDocument[]; skippedDocuments: SkippedIndexedDocument[] }> {

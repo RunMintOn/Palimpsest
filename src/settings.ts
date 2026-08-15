@@ -331,27 +331,27 @@ export class SideGrepSettingTab extends PluginSettingTab {
     this.containerEl.createEl("p", { text: `当前生效：${this.scopeLabel(scope.effective?.excludedDirectories ?? [])}` });
     this.containerEl.createEl("p", { text: `准备应用：${this.scopeLabel(scope.desired.excludedDirectories)}` });
     const application = this.plugin.getIndexScopeApplicationUi();
-    if (application.available || application.applying || this.scopeApplying) {
-      new Setting(this.containerEl)
-        .setName("应用索引范围变化")
-        .setDesc("只补充新纳入目录的文档，并删除新排除目录的记录。")
-        .addButton((button) => button
-          .setButtonText(application.applying || this.scopeApplying ? "正在应用…" : "应用索引范围变化")
-          .setCta()
-          .setDisabled(!application.available || application.applying || this.scopeApplying)
-          .onClick(async () => {
-            if (!this.plugin.getIndexScopeApplicationUi().available || this.scopeApplying) return;
-            this.scopeApplying = true;
-            button.setButtonText("正在应用…");
-            button.setDisabled(true);
-            try {
-              await this.plugin.applyIndexScopeChanges();
-            } finally {
-              this.scopeApplying = false;
-              this.display();
-            }
-          }));
-    }
+    new Setting(this.containerEl)
+      .setName("应用索引范围变化")
+      .setDesc(application.available
+        ? "只补充新纳入目录的文档，并删除新排除目录的记录。"
+        : "当前有其他索引操作正在进行；操作结束后即可应用。")
+      .addButton((button) => button
+        .setButtonText(application.applying || this.scopeApplying ? "正在应用…" : "应用索引范围变化")
+        .setCta()
+        .setDisabled(!application.available || application.applying || this.scopeApplying)
+        .onClick(async () => {
+          if (!this.plugin.getIndexScopeApplicationUi().available || this.scopeApplying) return;
+          this.scopeApplying = true;
+          button.setButtonText("正在应用…");
+          button.setDisabled(true);
+          try {
+            await this.plugin.applyIndexScopeChanges();
+          } finally {
+            this.scopeApplying = false;
+            this.display();
+          }
+        }));
   }
 
   private excludedDirectorySetting(directory: string): void {

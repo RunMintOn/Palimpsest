@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan } from "../src/incremental-index-plan";
+import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan, summarizeIncrementalChanges } from "../src/incremental-index-plan";
 import { indexScope } from "../src/index-scope";
 import { planIndexScopeTransition } from "../src/index-scope-transition";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk } from "../src/types";
@@ -17,6 +17,30 @@ function document(path: string, text = "body") {
 }
 
 function indexed(source: Chunk): IndexedChunk { return { ...source, vector: new Float32Array([1, 2, 3]) }; }
+
+test("incremental change summaries ignore stat-only updates and count semantic changes", () => {
+  const summary = summarizeIncrementalChanges({
+    changes: [
+      { kind: "path", path: "same.md" },
+      { kind: "path", path: "changed.md" },
+      { kind: "path", path: "new.md" }
+    ],
+    upsertPaths: ["changed.md", "new-skipped.md", "new.md", "same.md", "skipped.md"],
+    deletes: ["deleted.md"],
+    indexedDocumentPaths: ["same.md", "changed.md", "deleted.md", "skipped.md"],
+    indexedChunks: [indexed(chunk("same.md")), indexed(chunk("changed.md", "old"))],
+    documents: [
+      { ...document("same.md"), chunks: [{ ...chunk("same.md"), startLine: 99, endLine: 99 }] },
+      document("changed.md", "new"),
+      document("new.md")
+    ],
+    skippedDocuments: [
+      { filePath: "skipped.md", fileName: "skipped", sourceMtime: 2, sourceSize: 3, reasonCode: "invalid-chunk-structure" },
+      { filePath: "new-skipped.md", fileName: "new-skipped", sourceMtime: 2, sourceSize: 3, reasonCode: "invalid-chunk-structure" }
+    ]
+  });
+  assert.deepEqual(summary, { added: 2, renamed: 0, modified: 1, skipped: 2, deleted: 1 });
+});
 
 test("threshold-below incremental plan proceeds automatically with one document patch", async () => {
   const plan = prepareIncrementalIndexPlan({

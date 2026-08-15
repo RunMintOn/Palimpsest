@@ -1,9 +1,10 @@
-import { embeddingInputHash, EmbeddingReuseLookup, groupChunksByEmbeddingInput } from "./embedding-reuse";
+import { embeddingInputHash, EmbeddingReuseLookup, groupChunksByEmbeddingInput, sameEmbeddingInputs } from "./embedding-reuse";
 import { ScannedIndexDocument } from "./index-document-scan";
 import { IndexDocument } from "./index-store";
 import { IndexScope, sameIndexScope } from "./index-scope";
 import { sameIdentity } from "./persistent-index";
 import { Chunk, IndexIdentity, IndexedChunk, NumericVector, SkippedIndexedDocument } from "./types";
+import { VaultChange } from "./vault-change-plan";
 
 export const LARGE_INCREMENTAL_DOCUMENT_THRESHOLD = 50;
 export const LARGE_INCREMENTAL_CHUNK_THRESHOLD = 500;
@@ -14,6 +15,7 @@ export interface IncrementalChangeSummary {
   added: number;
   renamed: number;
   modified: number;
+  skipped?: number;
   deleted: number;
 }
 
@@ -29,6 +31,53 @@ export interface IncrementalIndexPlanState {
   vaultRevision: number;
   identity: IndexIdentity;
   scope: IndexScope;
+}
+
+export interface IncrementalChangeSummaryInput {
+  changes: readonly VaultChange[];
+  upsertPaths: readonly string[];
+  deletes: readonly string[];
+  indexedDocumentPaths: readonly string[];
+  indexedChunks: readonly IndexedChunk[];
+  documents: readonly IncrementalScannedDocument[];
+  skippedDocuments?: readonly SkippedIndexedDocument[];
+}
+
+export function summarizeIncrementalChanges(input: IncrementalChangeSummaryInput): IncrementalChangeSummary {
+  const indexed = new Set(input.indexedDocumentPaths);
+  const renamePaths = new Set<string>();
+  for (const change of input.changes) {
+    if (change.kind !== "rename") continue;
+    if (!change.isFolder) renamePaths.add(change.newPath);
+    else {
+      const prefix = `${change.newPath}/`;
+      for (const path of input.upsertPaths) if (path === change.newPath || path.startsWith(prefix)) renamePaths.add(path);
+    }
+  }
+
+  const indexedChunksByPath = new Map<string, IndexedChunk[]>();
+  for (const chunk of input.indexedChunks) {
+    const chunks = indexedChunksByPath.get(chunk.filePath) ?? [];
+    chunks.push(chunk);
+    indexedChunksByPath.set(chunk.filePath, chunks);
+  }
+  const currentDocuments = new Map<string, IncrementalScannedDocument | SkippedIndexedDocument>();
+  for (const document of input.documents) currentDocuments.set(document.filePath, document);
+  for (const document of input.skippedDocuments ?? []) currentDocuments.set(document.filePath, document);
+
+  const modified = new Set<string>();
+  const skipped = new Set((input.skippedDocuments ?? []).map((document) => document.filePath));
+  for (const path of input.upsertPaths) {
+    if (!indexed.has(path) || renamePaths.has(path)) continue;
+    const document = currentDocuments.get(path);
+    if (!document) modified.add(path);
+    else if ("reasonCode" in document) continue;
+    else if (!sameEmbeddingInputs(document.chunks, indexedChunksByPath.get(path) ?? [])) modified.add(path);
+  }
+
+  const added = input.upsertPaths.filter((path) => !indexed.has(path) && !renamePaths.has(path)).length;
+  const renamed = input.upsertPaths.filter((path) => renamePaths.has(path)).length;
+  return { added, renamed, modified: modified.size, skipped: skipped.size || undefined, deleted: input.deletes.length };
 }
 
 export interface PrepareIncrementalIndexPlanInput {

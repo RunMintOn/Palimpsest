@@ -5,7 +5,7 @@ import { chunkMarkdown } from "../src/chunker";
 import { EmbeddingError, OllamaEmbeddingProvider } from "../src/embedding-provider";
 import { shouldAutoExpand } from "../src/expansion-policy";
 import { BuildCancellationController, IndexBuildCancelled } from "../src/build-cancellation";
-import { indexBuildConfirmationModel, formatIndexBuildNumber } from "../src/index-build-confirmation";
+import { incrementalIndexConfirmationModel, indexBuildConfirmationModel, formatIndexBuildNumber } from "../src/index-build-confirmation";
 import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "../src/index-build-flow";
 import { DuplicateIndexChunkIdError, IndexBuildPlanStale, VaultRevision, executePreparedIndexBuild, prepareIndexBuild } from "../src/index-build-plan";
 import { addExcludedDirectory, filterExcludedDirectoryCandidates, indexScope, isPathExcluded, sameIndexScope } from "../src/index-scope";
@@ -699,6 +699,18 @@ test("index-build confirmation uses distinct initial/rebuild copy and shows ever
   assert.equal(initial.lines.find((line) => line.label === "Markdown 文件")?.value, "1,038");
   assert.equal(initial.lines.find((line) => line.label === "排除目录")?.value, "Archive、Templates");
   assert.equal(formatIndexBuildNumber(5846), "5,846");
+});
+
+test("incremental confirmation separates semantic changes from skipped documents", () => {
+  const model = incrementalIndexConfirmationModel({
+    documents: 417,
+    reusableChunks: 3750,
+    pendingChunks: 771,
+    pendingDocuments: 14,
+    changes: { added: 13, renamed: 0, modified: 1, skipped: 2, deleted: 2 }
+  });
+  assert.equal(model.lines.find((line) => line.label === "待生成向量的文档")?.value, "14");
+  assert.equal(model.lines.find((line) => line.label === "变化概要")?.value, "新增 13 篇、修改 1 篇、未能索引 2 篇、删除 2 篇");
 });
 
 test("index-build confirmation names an empty exclusion scope and fully reusable vectors", () => {

@@ -12,8 +12,8 @@ const readyPending = {
   applying: false
 };
 
-test("a deferred ordinary incremental update blocks applying an index scope change", () => {
-  assert.equal(canApplyIndexScopeChange({ ...readyPending, deferredLargeIndexUpdate: true }), false);
+test("an explicit index scope change remains available after an ordinary update was deferred", () => {
+  assert.equal(canApplyIndexScopeChange({ ...readyPending, deferredLargeIndexUpdate: true }), true);
   assert.equal(canApplyIndexScopeChange(readyPending), true);
 });
 
