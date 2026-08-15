@@ -58,17 +58,46 @@ Palimpsest（重写本）是中世纪羊皮纸上的一种书写方式——旧�
 - [Ollama](https://ollama.com) 本地运行
 - Qwen3 Embedding 模型
 
+首次建立索引前，请先安装并启动 Ollama，再下载默认模型：
+
 ```bash
 ollama pull qwen3-embedding:0.6b
 ```
 
+### Ollama 配置
+
+默认 endpoint `http://127.0.0.1:11434/api/embed` 和模型名称 `qwen3-embedding:0.6b` 已经预填，按默认配置使用时通常无需修改。只有使用自定义 Ollama 地址或其他模型时，才需要在「设置 → Palimpsest → Embedding 服务」中修改 endpoint 和模型名称；更换模型还要把 dimensions 改为对应维度，并重新建立索引。
+
+Palimpsest 当前是桌面端 beta，尚未进入 Obsidian 官方社区插件目录。
+
 ### 安装
 
-下载 `main.js`、`manifest.json`、`styles.css` 放入你的 vault 插件目录，然后在 Obsidian 中启用。
+#### 使用 BRAT 安装 beta（推荐）
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) 是一个 Obsidian 插件，
+用于从 GitHub Release 安装和自动更新 beta 插件。
+
+1. 在 Obsidian 的「设置 → 社区插件」中安装并启用 **BRAT**。
+2. 打开 BRAT 设置，添加
+   `https://github.com/RunMintOn/Palimpsest`。
+3. BRAT 安装完成后，启用 **Palimpsest**。
+
+BRAT 需要 GitHub 上已经发布 Release。它会从 Release 下载 `main.js`、
+`manifest.json` 和 `styles.css`，以后发布新版本时也可以自动更新。
+
+#### 手动安装
+
+从 [GitHub Release](https://github.com/RunMintOn/Palimpsest/releases) 下载
+`main.js`、`manifest.json`、`styles.css`，放入你的 vault 插件目录，然后在
+Obsidian 中启用。
 
 ```
 your-vault/.obsidian/plugins/palimpsest/
 ```
+
+### 遇到问题
+
+遇到安装或使用问题时，可以把 [Palimpsest 仓库](https://github.com/RunMintOn/Palimpsest) 和具体报错、问题现象一起交给 AI 助手，请它结合项目代码协助排查；也可以直接提交 GitHub Issue。
 
 ### 首次使用
 

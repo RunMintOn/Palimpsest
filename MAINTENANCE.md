@@ -84,3 +84,49 @@ py scripts/verify-ollama-embedding.py
 
 出现“恢复上一代索引”的提示时，结果来自 previous generation；先完成一次
 成功的全量重建，再依赖增量更新。
+
+## 发布 beta 版本
+
+版本号需要同时更新 `manifest.json` 和 `package.json`，并使用三段式 SemVer。
+`main.js` 不提交到仓库；GitHub Actions 会在推送与版本号完全一致的 tag 后，
+自动执行检查、测试、构建，并创建带有以下文件的 GitHub Release：
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+发布流程：
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+git tag 0.1.0
+git push origin 0.1.0
+```
+
+将示例版本替换为实际版本。tag 必须与两个 JSON 文件中的 `version` 完全一致，
+不要只改其中一个。Release 创建后，测试者可以通过 BRAT 安装该版本。
+
+## 提交时同步 Windows 插件目录
+
+仓库包含一个可追踪的 `.githooks/pre-commit`。启用后，每次提交会先运行
+`npm run build`，再调用 `scripts/sync-to-windows.sh`，把最新的
+`main.js`、`manifest.json` 和 `styles.css` 同步到 Windows 插件目录，同时保留
+目标目录中的 `data.json`。
+
+在当前工作区启用一次：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+如果临时没有 Windows 目标目录，只有在明确确认不需要同步时才跳过：
+
+```bash
+PALIMPSEST_SKIP_WINDOWS_SYNC=1 git commit ...
+```
+
+这个 hook 只负责构建和同步，不代替提交前的类型检查和测试。

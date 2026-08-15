@@ -86,18 +86,54 @@ see. Palimpsest brings those old traces back into view.
 - [Ollama](https://ollama.com) running locally
 - A Qwen3 Embedding model
 
+Before the first index build, install and start Ollama, then download the
+default model:
+
 ```bash
 ollama pull qwen3-embedding:0.6b
 ```
 
+### Ollama configuration
+
+The default endpoint `http://127.0.0.1:11434/api/embed` and model
+`qwen3-embedding:0.6b` are prefilled, so you normally do not need to change
+anything. Only change the endpoint and model under **Settings → Palimpsest →
+Embedding** when using a custom Ollama service or another model; when changing
+models, also set `dimensions` to the model's output size and rebuild the index.
+
+Palimpsest is currently a desktop-only beta and is not yet listed in
+Obsidian's official Community Plugins directory.
+
 ### Installation
 
-Copy `main.js`, `manifest.json`, and `styles.css` into your vault's plugin
-directory, then enable the plugin in Obsidian.
+#### Beta installation with BRAT (recommended)
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) is an Obsidian plugin
+for installing and updating beta plugins from GitHub Releases.
+
+1. In Obsidian, install and enable **BRAT** from **Settings → Community
+   plugins**.
+2. Open BRAT settings and add
+   `https://github.com/RunMintOn/Palimpsest`.
+3. Enable **Palimpsest** after BRAT installs it.
+
+BRAT requires a published [GitHub Release](https://github.com/RunMintOn/Palimpsest/releases).
+It downloads `main.js`, `manifest.json`, and `styles.css` from that release and
+can update the plugin when a newer release is published.
+
+#### Manual installation
+
+Download `main.js`, `manifest.json`, and `styles.css` from a GitHub Release and
+copy them into your vault's plugin directory, then enable the plugin in
+Obsidian.
 
 ```
 your-vault/.obsidian/plugins/palimpsest/
 ```
+
+### Troubleshooting
+
+If installation or use causes problems, share the [Palimpsest repository](https://github.com/RunMintOn/Palimpsest) together with the exact error or symptoms with an AI assistant so it can inspect the project code and help diagnose the issue; you can also open a GitHub Issue.
 
 ### First use
 

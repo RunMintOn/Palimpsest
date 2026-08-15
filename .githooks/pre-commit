@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+if [[ "${PALIMPSEST_SKIP_WINDOWS_SYNC:-0}" == "1" ]]; then
+  echo "Skipping Windows plugin sync because PALIMPSEST_SKIP_WINDOWS_SYNC=1"
+  exit 0
+fi
+
+echo "Building the current plugin before commit..."
+npm run build
+
+bash scripts/sync-to-windows.sh

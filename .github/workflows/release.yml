@@ -1,0 +1,72 @@
+name: Release plugin
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check release versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const tag = process.env.RELEASE_TAG;
+          const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+
+          if (!/^\d+\.\d+\.\d+$/.test(tag)) {
+            throw new Error(`Release tag must be x.y.z, got ${tag}`);
+          }
+          for (const [file, version] of [
+            ['manifest.json', manifest.version],
+            ['package.json', packageJson.version],
+          ]) {
+            if (version !== tag) {
+              throw new Error(`${file} has version ${version}, expected ${tag}`);
+            }
+          }
+          NODE
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build and verify bundle
+        run: npm run build
+
+      - name: Check release assets
+        run: test -s main.js && test -s manifest.json && test -s styles.css
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" main.js manifest.json styles.css \
+              --title "Palimpsest $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
