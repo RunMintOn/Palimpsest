@@ -1,3 +1,4 @@
+import type { IncrementalIndexDiagnostic } from "./incremental-index-diagnostics";
 import type { IndexBuildSummary } from "./index-build-plan";
 import type { IncrementalIndexSummary } from "./incremental-index-plan";
 
@@ -6,12 +7,24 @@ export interface IndexBuildConfirmationLine {
   value: string;
 }
 
+export interface IncrementalIndexPreviewRow {
+  path: string;
+  detail: string;
+}
+
+/** Read-only high-cost view supplied only for prepared large incremental updates. */
+export interface IncrementalIndexPreviewModel {
+  directoryRows: readonly IncrementalIndexPreviewRow[];
+  documentRows: readonly IncrementalIndexPreviewRow[];
+}
+
 export interface IndexBuildConfirmationModel {
   title: string;
   confirmLabel: string;
   prompt: string;
   lines: readonly IndexBuildConfirmationLine[];
   noEmbeddingMessage?: string;
+  incrementalPreview?: IncrementalIndexPreviewModel;
 }
 
 /** Formats the small, user-visible summary independently from Obsidian's DOM. */
@@ -51,7 +64,11 @@ export function indexBuildConfirmationModel(
 }
 
 /** Formats the same confirmation Modal for a prepared large incremental patch. */
-export function incrementalIndexConfirmationModel(summary: IncrementalIndexSummary): IndexBuildConfirmationModel {
+export function incrementalIndexConfirmationModel(
+  summary: IncrementalIndexSummary,
+  diagnostic?: IncrementalIndexDiagnostic,
+  manualPreview = false
+): IndexBuildConfirmationModel {
   const changes = summary.changes;
   const changeParts = [
     changes.added ? `新增 ${formatIndexBuildNumber(changes.added)} 篇` : undefined,
@@ -61,15 +78,27 @@ export function incrementalIndexConfirmationModel(summary: IncrementalIndexSumma
     changes.deleted ? `删除 ${formatIndexBuildNumber(changes.deleted)} 篇` : undefined
   ].filter((part): part is string => Boolean(part));
   return {
-    title: "确认大规模索引更新",
+    title: manualPreview ? "待处理索引更新" : "确认大规模索引更新",
     confirmLabel: "继续更新",
-    prompt: "此更新需要生成较多向量。确认后将继续使用已扫描的结果；如果文件或设置已变化，会要求重新扫描。",
+    prompt: manualPreview
+      ? "这是基于当前 Vault 和本地索引的只读预览。继续更新才会生成向量；如果文件或设置已变化，会要求重新检查。"
+      : "此更新需要生成较多向量。确认后将继续使用已扫描的结果；如果文件或设置已变化，会要求重新扫描。",
     lines: [
       { label: "待生成向量的文档", value: formatIndexBuildNumber(summary.pendingDocuments) },
       { label: "可复用向量", value: formatIndexBuildNumber(summary.reusableChunks) },
       { label: "待生成向量片段", value: formatIndexBuildNumber(summary.pendingChunks) },
       { label: "变化概要", value: changeParts.join("、") || "路径或文件状态变化" }
     ],
-    noEmbeddingMessage: summary.pendingChunks === 0 ? "此次变化无需生成向量。" : undefined
+    noEmbeddingMessage: summary.pendingChunks === 0 ? "此次变化无需生成向量。" : undefined,
+    incrementalPreview: diagnostic ? {
+      directoryRows: diagnostic.vectorReuse.pendingTopLevelDirectories.map((directory) => ({
+        path: directory.path,
+        detail: `待生成 ${formatIndexBuildNumber(directory.pendingChunks)} · 可复用 ${formatIndexBuildNumber(directory.reusableChunks)} · ${formatIndexBuildNumber(directory.documents)} 篇`
+      })),
+      documentRows: diagnostic.pendingDocuments.map((document) => ({
+        path: document.path,
+        detail: `待生成 ${formatIndexBuildNumber(document.pendingChunks)} · 可复用 ${formatIndexBuildNumber(document.reusableChunks)}`
+      }))
+    } : undefined
   };
 }

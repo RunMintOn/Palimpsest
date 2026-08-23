@@ -185,6 +185,8 @@ export interface ExecuteIncrementalIndexPlanOptions {
   /** Lifecycle seam: callers stop work without coupling this plan to Obsidian. */
   assertCanContinue(): void;
   yieldToUi(): Promise<void>;
+  /** Reports actual embedding request groups, excluding vectors reused from the formal index. */
+  onEmbeddingProgress?(current: number, total: number): void;
 }
 
 export interface ExecutedIncrementalIndexPlan {
@@ -205,6 +207,7 @@ export async function executeIncrementalIndexPlan(
   const vectors = new Map<string, NumericVector>();
   for (const document of data.documents) for (const item of document.chunks) if (item.vector) vectors.set(item.chunk.id, item.vector);
   const groups = groupChunksByEmbeddingInput(pending);
+  if (groups.length) options.onEmbeddingProgress?.(0, groups.length);
   for (let start = 0; start < groups.length; start += options.batchSize) {
     options.assertCanContinue();
     const batch = groups.slice(start, start + options.batchSize);
@@ -212,6 +215,7 @@ export async function executeIncrementalIndexPlan(
     options.assertCanContinue();
     if (embedded.length !== batch.length) throw new Error(`Embedding response count ${embedded.length} does not match requested input groups ${batch.length}`);
     for (let index = 0; index < batch.length; index++) for (const chunk of batch[index].chunks) vectors.set(chunk.id, embedded[index]);
+    options.onEmbeddingProgress?.(Math.min(start + batch.length, groups.length), groups.length);
     await options.yieldToUi();
     options.assertCanContinue();
   }

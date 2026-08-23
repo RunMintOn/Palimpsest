@@ -6,8 +6,9 @@ import { BulkIndexUpdateDeferral } from "./bulk-index-update-deferral";
 import { EmbeddingError, OllamaEmbeddingProvider } from "./embedding-provider";
 import { embeddingInputHash } from "./embedding-reuse";
 import { FullIndexBuildRequestGate, runConfirmedIndexBuild } from "./index-build-flow";
-import { confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
+import { confirmIncrementalIndexPreview, confirmIndexBuild, confirmLargeIncrementalIndexUpdate } from "./index-build-modal";
 import { IndexBuildPlanStale, PreparedIndexBuild, VaultRevision, assertIndexBuildPlanCurrent, executePreparedIndexBuild as executePlan, prepareIndexBuild as preparePlan } from "./index-build-plan";
+import { diagnoseIncrementalIndexUpdate } from "./incremental-index-diagnostics";
 import { IndexDocumentScanStale, IndexDocumentStructureError, ScannedIndexDocument, scanIndexDocument } from "./index-document-scan";
 import { PersistentIndex, sameIdentity } from "./persistent-index";
 import { createIndexStore, IndexDocument, IndexStore } from "./index-store";
@@ -15,7 +16,7 @@ import { indexLoadRecoveryMessage } from "./index-load-feedback";
 import { runPreparedIncrementalIndexUpdate } from "./incremental-index-flow";
 import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan, summarizeIncrementalChanges } from "./incremental-index-plan";
 import { completionActions } from "./index-update-coordination";
-import { runIndexReconciliation } from "./index-reconciliation";
+import { planIndexReconciliation, runIndexReconciliation } from "./index-reconciliation";
 import { pluginSettingsData, settingsFromPluginData } from "./plugin-settings-data";
 import { IndexScope, IndexScopeStatus, indexScope, indexScopeStatus, isPathExcluded, sameIndexScope } from "./index-scope";
 import { canApplyIndexScopeChange, shouldRefreshAfterIndexScopeChange } from "./index-scope-application";
@@ -109,6 +110,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.addSettingTab(new SideGrepSettingTab(this.app, this));
     this.addCommand({ id: "open-sidebar", name: "打开 Palimpsest 侧边栏", callback: () => void this.activateView() });
     this.addCommand({ id: "rebuild-index", name: "准备建立/全量重建知识片段索引", callback: () => void this.requestFullIndexBuild() });
+    this.addCommand({ id: "preview-pending-index-update", name: "检查待处理索引更新", callback: () => void this.previewPendingIndexUpdate() });
     this.registerEvent(this.app.workspace.on("editor-change", (editor, view) => this.onEditorChange(editor, view)));
     this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => this.onActiveLeafChange(leaf)));
@@ -880,14 +882,16 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     this.buildCancellation.cancelCurrentBuild();
   }
 
-  /** Prepares all vault reads and embeddings before one durable patch transaction. */
-  private async commitChangedDocuments(changes: readonly VaultChange[], scope: IndexScope, skipLargeConfirmation = false): Promise<boolean> {
+  /** Scans the current vault and creates one opaque incremental patch candidate without embedding or writing. */
+  private async prepareChangedDocuments(changes: readonly VaultChange[], scope: IndexScope) {
     this.buildCancellation.assertPluginActive();
+    const indexedDocumentPaths = this.index.documentPaths;
+    const indexedChunks = this.index.chunks;
     const markdownFiles = this.app.vault.getMarkdownFiles();
     const byPath = new Map(markdownFiles.map((file) => [file.path, file]));
     const plan = planVaultChanges({
       changes,
-      indexedDocumentPaths: this.index.documentPaths,
+      indexedDocumentPaths,
       currentMarkdownPaths: markdownFiles.map((file) => file.path),
       isIncluded: (path) => !this.isExcluded(path, scope)
     });
@@ -898,43 +902,84 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       documents: scanned.documents,
       skippedDocuments: scanned.skippedDocuments,
       deletes: plan.deletes,
-      reusableChunks: this.index.chunks,
+      reusableChunks: indexedChunks,
       current,
       changes: summarizeIncrementalChanges({
         changes,
         upsertPaths: plan.upsertPaths,
         deletes: plan.deletes,
-        indexedDocumentPaths: this.index.documentPaths,
-        indexedChunks: this.index.chunks,
+        indexedDocumentPaths,
+        indexedChunks,
         documents: scanned.documents,
         skippedDocuments: scanned.skippedDocuments
       })
     });
+    return {
+      plan,
+      prepared,
+      diagnostic: () => diagnoseIncrementalIndexUpdate({
+        scope,
+        changes,
+        upsertPaths: plan.upsertPaths,
+        deletes: plan.deletes,
+        indexedDocumentPaths,
+        indexedChunks,
+        documents: scanned.documents,
+        skippedDocuments: scanned.skippedDocuments,
+        summary: prepared.summary
+      })
+    };
+  }
+
+  /** Commits a fully embedded patch only after the caller's stale-plan checks pass. */
+  private async commitChangedDocumentPatch(upserts: readonly IndexDocument[], deletes: readonly string[], showProgress = false): Promise<void> {
+    this.buildCancellation.assertPluginActive();
+    if (showProgress) {
+      const chunkCount = upserts.reduce((total, document) => total + ("chunks" in document ? document.chunks.length : 0), 0);
+      this.presentIndexProgress({ phase: "saving", current: chunkCount, total: chunkCount, label: "正在保存索引" });
+    }
+    const durable = await this.requireIndexStore().commit({
+      kind: "patch-documents",
+      identity: this.indexIdentity(),
+      upserts,
+      deletes
+    });
+    // A successful durable write survives unload, but an unloading plugin
+    // must not mutate memory or the UI after it completes.
+    this.buildCancellation.assertPluginActive();
+    this.index.commit(durable);
+    this.buildCancellation.assertPluginActive();
+  }
+
+  private presentIncrementalEmbeddingProgress(current: number, total: number): void {
+    this.presentIndexProgress({ phase: "embedding", current, total, label: "正在生成向量" });
+    if (current === 0) new Notice(`正在生成 ${total} 组向量，可在 Palimpsest 侧边栏查看进度。`);
+  }
+
+  private presentIncrementalCompletion(): void {
+    this.present({ kind: "complete", message: "索引更新完成" }, this.results);
+    new Notice("索引更新完成。");
+  }
+
+  /** Prepares all vault reads and embeddings before one durable patch transaction. */
+  private async commitChangedDocuments(changes: readonly VaultChange[], scope: IndexScope, skipLargeConfirmation = false): Promise<boolean> {
+    const update = await this.prepareChangedDocuments(changes, scope);
+    const { plan, prepared } = update;
     if (!prepared.summary.documents && !plan.deletes.length) return false;
+    const needsConfirmation = !skipLargeConfirmation && isLargeIncrementalIndexPlan(prepared.summary);
+    const diagnostic = needsConfirmation ? update.diagnostic() : undefined;
     const outcome = await runPreparedIncrementalIndexUpdate({
-      needsConfirmation: !skipLargeConfirmation && isLargeIncrementalIndexPlan(prepared.summary),
-      confirm: () => confirmLargeIncrementalIndexUpdate(this.app, prepared.summary),
+      needsConfirmation,
+      confirm: () => confirmLargeIncrementalIndexUpdate(this.app, prepared.summary, diagnostic),
       execute: () => executeIncrementalIndexPlan(prepared, {
         current: { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.index.scope ?? scope },
         batchSize: this.settings.embeddingBatchSize,
         embedDocuments: async (chunks) => (await this.provider().embedDocuments(chunks.map(embeddingText))).vectors,
         assertCanContinue: () => this.buildCancellation.assertPluginActive(),
-        yieldToUi: () => this.yieldToUi()
+        yieldToUi: () => this.yieldToUi(),
+        onEmbeddingProgress: needsConfirmation ? (current, total) => this.presentIncrementalEmbeddingProgress(current, total) : undefined
       }),
-      commit: async (executed) => {
-        this.buildCancellation.assertPluginActive();
-        const durable = await this.requireIndexStore().commit({
-          kind: "patch-documents",
-          identity: this.indexIdentity(),
-          upserts: executed.upserts,
-          deletes: executed.deletes
-        });
-        // A successful durable write survives unload, but an unloading plugin
-        // must not mutate memory or the UI after it completes.
-        this.buildCancellation.assertPluginActive();
-        this.index.commit(durable);
-        this.buildCancellation.assertPluginActive();
-      }
+      commit: async (executed) => this.commitChangedDocumentPatch(executed.upserts, executed.deletes, needsConfirmation)
     });
     if (outcome === "cancelled") {
       // Do not restore this batch: repeatedly showing the same confirmation is
@@ -948,8 +993,72 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       }, this.results);
       return false;
     }
+    if (needsConfirmation) this.presentIncrementalCompletion();
     const activePath = this.latestMarkdownView?.file?.path;
     return [...plan.upsertPaths, ...plan.deletes].some((path) => path !== activePath);
+  }
+
+  /** User-requested dry run. It scans current files, then waits for an explicit update confirmation. */
+  async previewPendingIndexUpdate(): Promise<void> {
+    if (this.isAnyIndexUpdateActive()) {
+      new Notice("索引正在更新，完成后再检查待处理更新。");
+      return;
+    }
+    if (!this.index.isReady(this.indexIdentity()) || this.fallbackGenerationInUse) {
+      new Notice("当前索引不可用于检查增量更新，请先完成全量重建。");
+      return;
+    }
+    const scope = this.index.scope;
+    if (!scope) return;
+
+    this.flushingFileUpdates = true;
+    let patchSucceeded = false;
+    let refreshRequested = false;
+    try {
+      const reconciliation = planIndexReconciliation(
+        [...this.index.documents, ...this.index.skippedDocuments],
+        this.app.vault.getMarkdownFiles()
+          .filter((file) => !this.isExcluded(file.path, scope))
+          .map((file) => ({ path: file.path, mtime: file.stat.mtime, size: file.stat.size }))
+      );
+      if (!reconciliation.changes.length) {
+        new Notice("当前索引没有待处理的文件变化。");
+        return;
+      }
+      const update = await this.prepareChangedDocuments(reconciliation.changes, scope);
+      const { plan, prepared } = update;
+      if (!prepared.summary.documents && !plan.deletes.length) {
+        new Notice("当前索引没有待处理的文件变化。");
+        return;
+      }
+      const plannedRevision = this.vaultRevision.value;
+      const outcome = await runPreparedIncrementalIndexUpdate({
+        needsConfirmation: true,
+        confirm: () => confirmIncrementalIndexPreview(this.app, prepared.summary, update.diagnostic()),
+        execute: () => executeIncrementalIndexPlan(prepared, {
+          current: { vaultRevision: this.vaultRevision.value, identity: this.indexIdentity(), scope: this.index.scope ?? scope },
+          batchSize: this.settings.embeddingBatchSize,
+          embedDocuments: async (chunks) => (await this.provider().embedDocuments(chunks.map(embeddingText))).vectors,
+          assertCanContinue: () => this.buildCancellation.assertPluginActive(),
+          yieldToUi: () => this.yieldToUi(),
+          onEmbeddingProgress: (current, total) => this.presentIncrementalEmbeddingProgress(current, total)
+        }),
+        commit: async (executed) => this.commitChangedDocumentPatch(executed.upserts, executed.deletes, true)
+      });
+      if (outcome === "cancelled") return;
+      patchSucceeded = true;
+      this.pendingVaultChanges.discardThrough(plannedRevision);
+      this.deferredLargeIndexUpdate.clear();
+      const activePath = this.latestMarkdownView?.file?.path;
+      refreshRequested = [...plan.upsertPaths, ...plan.deletes].some((path) => path !== activePath);
+      this.presentIncrementalCompletion();
+    } catch (error) {
+      console.error("[Palimpsest] Could not preview pending index update", error);
+      new Notice(`检查待处理索引更新失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.flushingFileUpdates = false;
+      this.completeIndexUpdate({ patchSucceeded, refreshRequested, schedulePendingAfterFailure: false });
+    }
   }
 
   /** Rejects a scope patch if its vault, desired/effective scope, or identity moved after preparation. */

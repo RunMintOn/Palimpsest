@@ -151,12 +151,22 @@ export class SideGrepSettingTab extends PluginSettingTab {
     this.localIndexStorageSettings();
     this.skippedDocumentSettings();
     this.heading("索引构建", "indexBuild");
+    this.pendingIndexUpdatePreviewSetting();
     this.fullIndexBuildSetting();
     this.number("建库批量大小", "每次 Ollama 文档 embedding 数", "embeddingBatchSize", 1);
     this.heading("片段切分", "chunking");
     this.number("片段目标长度", "推荐 500–700 字符", "chunkTargetLength", 1);
     this.number("片段最大长度", "推荐 1000–1200 字符", "chunkMaxLength", 1);
     this.number("片段最小有效长度", "短而有意义的笔记仍可索引", "chunkMinLength", 1);
+  }
+
+  private pendingIndexUpdatePreviewSetting(): void {
+    new Setting(this.containerEl)
+      .setName("检查待处理索引更新")
+      .setDesc("只读取当前 Vault 和本地索引，预览待生成向量及高成本文档。继续更新前不会调用 Ollama 或写入索引。")
+      .addButton((button) => button
+        .setButtonText("检查更新")
+        .onClick(() => void this.plugin.previewPendingIndexUpdate()));
   }
 
   private localIndexStorageSettings(): void {

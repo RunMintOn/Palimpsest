@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { executeIncrementalIndexPlan, isLargeIncrementalIndexPlan, prepareIncrementalIndexPlan, summarizeIncrementalChanges } from "../src/incremental-index-plan";
 import { indexScope } from "../src/index-scope";
+import { planIndexReconciliation } from "../src/index-reconciliation";
 import { planIndexScopeTransition } from "../src/index-scope-transition";
 import { CHUNKER_VERSION, Chunk, IndexIdentity, IndexedChunk } from "../src/types";
+import { planVaultChanges } from "../src/vault-change-plan";
 
 const identity: IndexIdentity = { model: "test", dimensions: 3, chunkerVersion: CHUNKER_VERSION, chunkTargetLength: 10, chunkMaxLength: 20, chunkMinLength: 1 };
 const current = { vaultRevision: 1, identity, scope: indexScope([]) };
@@ -59,6 +61,23 @@ test("threshold-below incremental plan proceeds automatically with one document 
   assert.deepEqual(executed.upserts.map((item) => item.filePath), ["changed.md"]);
 });
 
+test("incremental embedding progress starts immediately and counts only request groups", async () => {
+  const plan = prepareIncrementalIndexPlan({
+    documents: [document("first.md"), document("second.md")], deletes: [], reusableChunks: [], current,
+    changes: { added: 2, renamed: 0, modified: 0, deleted: 0 }
+  });
+  const progress: Array<[number, number]> = [];
+  await executeIncrementalIndexPlan(plan, {
+    current,
+    batchSize: 1,
+    embedDocuments: async () => [new Float32Array([1, 2, 3])],
+    assertCanContinue: () => undefined,
+    yieldToUi: async () => undefined,
+    onEmbeddingProgress: (completed, total) => progress.push([completed, total])
+  });
+  assert.deepEqual(progress, [[0, 2], [1, 2], [2, 2]]);
+});
+
 test("a pure move of more than 50 documents is fully reusable and does not require confirmation", () => {
   const old = Array.from({ length: 51 }, (_, index) => indexed(chunk(`old/note-${index}.md`)));
   const moved = Array.from({ length: 51 }, (_, index) => document(`new/note-${index}.md`));
@@ -68,6 +87,67 @@ test("a pure move of more than 50 documents is fully reusable and does not requi
   });
   assert.equal(plan.summary.pendingChunks, 0);
   assert.equal(isLargeIncrementalIndexPlan(plan.summary), false);
+});
+
+test("a restart reconciliation of a pure folder move reuses vectors despite added and deleted paths", () => {
+  const oldDocuments = [document("old/a.md"), document("old/nested/b.md")];
+  const currentPaths = ["new/a.md", "new/nested/b.md"];
+  const reconciliation = planIndexReconciliation(oldDocuments, currentPaths.map((path) => ({ path, mtime: 1, size: 4 })));
+  const vaultPlan = planVaultChanges({
+    changes: reconciliation.changes,
+    indexedDocumentPaths: oldDocuments.map((item) => item.filePath),
+    currentMarkdownPaths: currentPaths,
+    isIncluded: () => true
+  });
+  const oldChunks = oldDocuments.flatMap((item) => item.chunks.map(indexed));
+  const scanned = currentPaths.map((path) => document(path));
+  const changes = summarizeIncrementalChanges({
+    changes: reconciliation.changes,
+    upsertPaths: vaultPlan.upsertPaths,
+    deletes: vaultPlan.deletes,
+    indexedDocumentPaths: oldDocuments.map((item) => item.filePath),
+    indexedChunks: oldChunks,
+    documents: scanned
+  });
+  const plan = prepareIncrementalIndexPlan({
+    documents: scanned,
+    deletes: vaultPlan.deletes,
+    reusableChunks: oldChunks,
+    current,
+    changes
+  });
+
+  assert.deepEqual(changes, { added: 2, renamed: 0, modified: 0, skipped: undefined, deleted: 2 });
+  assert.equal(plan.summary.reusableChunks, 2);
+  assert.equal(plan.summary.pendingDocuments, 0);
+  assert.equal(plan.summary.pendingChunks, 0);
+});
+
+test("a changed chunk re-embeds while unchanged chunks in the same document reuse their vectors", () => {
+  const oldChunks = [
+    indexed(chunk("note.md", "See [[Old/target]]")),
+    indexed(chunk("note.md", "Unchanged B")),
+    indexed(chunk("note.md", "Unchanged C"))
+  ];
+  const scanned = {
+    filePath: "note.md", fileName: "note", sourceMtime: 2, sourceSize: 44,
+    chunks: [
+      chunk("note.md", "See [[New/target]]"),
+      chunk("note.md", "Unchanged B"),
+      chunk("note.md", "Unchanged C")
+    ]
+  };
+  const plan = prepareIncrementalIndexPlan({
+    documents: [scanned],
+    deletes: [],
+    reusableChunks: oldChunks,
+    current,
+    changes: { added: 0, renamed: 0, modified: 1, deleted: 0 }
+  });
+
+  assert.equal(plan.summary.reusableChunks, 2);
+  assert.equal(plan.summary.pendingDocuments, 1);
+  assert.equal(plan.summary.pendingChunks, 1);
 });
 
 test("a scope addition plans only newly admitted paths and reuses compatible vectors without Ollama", async () => {
