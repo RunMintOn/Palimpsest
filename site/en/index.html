@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Palimpsest resurfaces related passages from your older Obsidian notes while you write.">
+  <title>Palimpsest — Rediscover what you already knew</title>
+  <link rel="alternate" hreflang="en" href="../en/">
+  <link rel="alternate" hreflang="zh-CN" href="../zh/">
+  <link rel="alternate" hreflang="x-default" href="../">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alike&family=Sometype+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <main id="main">
+    <section class="hero comp-frame" aria-labelledby="hero-title">
+      <header class="masthead r-masthead-rule" data-region="masthead-rule">
+        <div class="masthead-left">
+          <a class="brand" href="#main" aria-label="Palimpsest home">
+            <img class="brand-mark" data-region="brand-mark" src="../obsidian-logo-gradient.svg" alt="">
+            <span class="brand-name r-brand-name" data-region="brand-name">Palimpsest</span>
+          </a>
+          <nav aria-label="Primary navigation">
+            <a class="nav-about r-nav-about" data-region="nav-about" href="#about">About</a>
+            <a href="#preview">In action</a>
+            <a class="nav-docs r-nav-documentation" data-region="nav-documentation" href="#documentation">How it works</a>
+          </nav>
+        </div>
+        <div class="masthead-right">
+          <div class="language-switch" aria-label="Language">
+            <a href="../zh/" lang="zh-CN" data-language="zh-CN">中文</a><span aria-hidden="true">/</span><span aria-current="page">EN</span>
+          </div>
+          <a class="button button-primary nav-install r-nav-install" data-region="nav-install" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">Install with BRAT</a>
+        </div>
+      </header>
+
+      <div class="chart" aria-label="An illustrative semantic map connecting the current note with three older passages">
+        <svg class="chart-field" viewBox="0 0 1586 992" role="img" aria-labelledby="chart-title chart-description">
+          <title id="chart-title">Related notes resurfacing around the current thought</title>
+          <desc id="chart-description">Three dated notes connect to a current sentence through semantic relationships.</desc>
+          <defs>
+            <linearGradient id="relation-one-gradient" gradientUnits="userSpaceOnUse" x1="438" y1="279" x2="899" y2="331">
+              <stop offset="0" stop-color="#6748ff" stop-opacity=".28"/>
+              <stop offset=".22" stop-color="#6748ff" stop-opacity=".7"/>
+              <stop offset="1" stop-color="#8e72ff"/>
+            </linearGradient>
+            <linearGradient id="relation-two-gradient" gradientUnits="userSpaceOnUse" x1="640" y1="477" x2="902" y2="346">
+              <stop offset="0" stop-color="#6748ff" stop-opacity=".25"/>
+              <stop offset=".2" stop-color="#6748ff" stop-opacity=".72"/>
+              <stop offset="1" stop-color="#8e72ff"/>
+            </linearGradient>
+            <linearGradient id="relation-three-gradient" gradientUnits="userSpaceOnUse" x1="954" y1="349" x2="1224" y2="518">
+              <stop offset="0" stop-color="#8e72ff"/>
+              <stop offset=".9" stop-color="#6748ff" stop-opacity=".72"/>
+              <stop offset="1" stop-color="#39d8df" stop-opacity=".28"/>
+            </linearGradient>
+            <filter id="semantic-soft" x="-15%" y="-25%" width="130%" height="150%">
+              <feGaussianBlur stdDeviation="4"/>
+            </filter>
+            <filter id="draft-wobble" x="-2%" y="-3%" width="104%" height="106%">
+              <feTurbulence type="fractalNoise" baseFrequency=".006 .04" numOctaves="2" seed="8" result="draft-noise"/>
+              <feDisplacementMap in="SourceGraphic" in2="draft-noise" scale=".75" xChannelSelector="R" yChannelSelector="B"/>
+            </filter>
+          </defs>
+          <g class="chart-grid" aria-hidden="true">
+            <circle cx="929" cy="333" r="170"/>
+            <circle cx="929" cy="333" r="304"/>
+            <circle cx="929" cy="333" r="650"/>
+            <path class="field-axis field-axis-secondary" d="M590 35V194"/>
+            <path class="field-axis" d="M929 31V805"/>
+            <path class="field-ticks" d="M583 35h14M583 185h14M923 145h12M926 216h6M923 333h12M926 407h6M923 485h12M926 595h6M923 694h12M926 793h6"/>
+            <path class="archive-sweep" d="M232 190C270 421 500 554 842 572C1034 582 1184 552 1302 505"/>
+            <g class="star-points">
+              <path d="M86 294h4M88 292v4M241 430h8M245 426v8M533 135h4M535 133v4M1128 198h4M1130 196v4M1057 686h4M1059 684v4M1323 747h4M1325 745v4M786 769h8M790 765v8M1282 724h4M1284 722v4"/>
+            </g>
+            <g class="compass" transform="translate(1488 277)">
+              <path d="M0-31V31M-31 0H31"/>
+              <text x="0" y="-41">N</text><text x="0" y="48">S</text><text x="-45" y="4">W</text><text x="39" y="4">E</text>
+            </g>
+          </g>
+          <g class="relation-auras" aria-hidden="true">
+            <path d="M438 279L899 331"/>
+            <path d="M640 477L902 346"/>
+            <path d="M954 349L1224 518"/>
+          </g>
+          <g class="semantic-paths" aria-hidden="true">
+            <path class="relation relation-one" data-region="relation-one" d="M438 279L899 331"/>
+            <path class="relation relation-two" data-region="relation-two" d="M640 477L902 346"/>
+            <path class="relation relation-three" data-region="relation-three" d="M954 349L1224 518"/>
+            <text x="596" y="280" transform="rotate(8 596 280)">SEMANTIC RELATIONSHIP</text>
+            <text x="762" y="419" transform="rotate(-27 762 419)">RELATED THEME</text>
+            <text x="1060" y="433" transform="rotate(32 1060 433)">COMPLEMENTARY</text>
+          </g>
+        </svg>
+
+        <article class="observation note-one" aria-label="Related note: Attention is Love">
+          <span class="observation-number">01</span>
+          <span class="marker" data-region="note-one-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-one-title" data-region="note-one-title">2022-04-17 · Attention is Love</p>
+          <blockquote class="observation-quote r-note-one-quote" data-region="note-one-quote">“Where attention goes,<br>life grows.”</blockquote>
+          <p class="coordinates r-note-one-coordinates" data-region="note-one-coordinates">(-0.73, 0.41)</p>
+        </article>
+
+        <article class="observation note-two" aria-label="Related note: On Returning">
+          <span class="observation-number">02</span>
+          <span class="marker" data-region="note-two-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-two-title" data-region="note-two-title">2021-11-02 · On Returning</p>
+          <blockquote class="observation-quote r-note-two-quote" data-region="note-two-quote">“Ideas become visible again<br>when the present gives<br>them context.”</blockquote>
+          <p class="coordinates r-note-two-coordinates" data-region="note-two-coordinates">(-0.42, -0.28)</p>
+        </article>
+
+        <article class="observation note-three" aria-label="Related note: Old Questions">
+          <span class="observation-number">03</span>
+          <span class="marker" data-region="note-three-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-three-title" data-region="note-three-title">2020-08-30 · Old Questions</p>
+          <blockquote class="observation-quote r-note-three-quote" data-region="note-three-quote">“Some questions wait until<br>we are ready to recognize<br>them.”</blockquote>
+          <p class="coordinates r-note-three-coordinates" data-region="note-three-coordinates">(0.68, -0.33)</p>
+        </article>
+
+        <article class="current-observation">
+          <span class="current-marker" data-region="current-marker" aria-hidden="true"><i></i></span>
+          <p class="current-label r-current-label" data-region="current-label">CURRENT NOTE</p>
+          <blockquote class="current-sentence r-current-sentence" data-region="current-sentence">“Maybe attention is less about<br>focus than about what we choose<br>to return to.”</blockquote>
+          <p class="current-coordinates r-current-coordinates" data-region="current-coordinates">(0.00, 0.00)</p>
+        </article>
+      </div>
+
+      <div class="hero-copy">
+        <h1 id="hero-title" class="r-hero-headline" data-region="hero-headline">Nothing you write<br>is written on a blank page.</h1>
+        <p class="hero-descriptor r-hero-descriptor" data-region="hero-descriptor">Beneath every new sentence, your past ink quietly resurfaces.</p>
+        <p class="hero-facts r-hero-facts" data-region="hero-facts">Desktop beta&nbsp; · &nbsp;Obsidian 1.12+&nbsp; · &nbsp;Local with Ollama</p>
+        <div class="hero-actions">
+          <a class="button button-primary r-hero-install" data-region="hero-install" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">Install with BRAT</a>
+          <a class="button button-secondary r-hero-github" data-region="hero-github" href="https://github.com/RunMintOn/Palimpsest">View on GitHub</a>
+        </div>
+      </div>
+
+      <ol class="process-strip r-process-rule" data-region="process-rule" aria-label="How Palimpsest works">
+        <li class="r-process-index" data-region="process-index"><span>01</span> INDEX LOCALLY</li>
+        <li class="r-process-write" data-region="process-write"><span>02</span> KEEP WRITING</li>
+        <li class="r-process-rediscover" data-region="process-rediscover"><span>03</span> REDISCOVER</li>
+      </ol>
+    </section>
+
+    <section class="archive-section" id="about" aria-labelledby="archive-title">
+      <div class="section-heading">
+        <h2 id="archive-title">Your past writing is still here.<br>It is waiting for the right context.</h2>
+        <p>Saving a thought is easy. Meeting it again when it matters is the harder part.</p>
+      </div>
+      <div class="time-field" aria-label="Old notes returning to the present">
+        <div class="time-entry">
+          <time datetime="2020-08-30">2020</time>
+          <div><span>Old Questions</span><p>“Some questions wait until we are ready to recognize them.”</p></div>
+        </div>
+        <div class="time-entry">
+          <time datetime="2021-11-02">2021</time>
+          <div><span>On Returning</span><p>“Ideas become visible again when the present gives them context.”</p></div>
+        </div>
+        <div class="time-entry">
+          <time datetime="2022-04-17">2022</time>
+          <div><span>Attention is Love</span><p>“Where attention goes, life grows.”</p></div>
+        </div>
+        <div class="present-entry">
+          <span>PRESENT NOTE</span>
+          <p>“Maybe attention is less about focus than about what we choose to return to.”</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="interface-section" id="preview" aria-labelledby="interface-title">
+      <div class="interface-copy">
+        <h2 id="interface-title">The passage,<br>not just the filename.</h2>
+        <p>Read the original context without leaving your draft. Open its source, or drag it into the note as a link or quotation.</p>
+        <ul>
+          <li>Markdown rendered in place</li>
+          <li>Full-note and selection queries</li>
+          <li>Incremental local indexing</li>
+        </ul>
+      </div>
+      <div class="obsidian-window" aria-label="Illustrative Palimpsest sidebar inside Obsidian">
+        <div class="window-bar"><i></i><i></i><i></i><span>On Attention.md</span></div>
+        <div class="editor-pane">
+          <span>ON ATTENTION</span>
+          <h3>What we choose to return to</h3>
+          <p>Maybe attention is less about focus than about what we choose to return to.</p>
+          <b class="caret" aria-hidden="true"></b>
+        </div>
+        <aside class="results-pane">
+          <div class="results-heading"><strong>Palimpsest</strong><span>3 passages</span></div>
+          <details open><summary><span>0.82</span> Attention is Love</summary><blockquote>Where attention goes, life grows.</blockquote><small>Journal › 2022</small></details>
+          <details open><summary><span>0.76</span> On Returning</summary><blockquote>Ideas become visible again when the present gives them context.</blockquote><small>Reflections › 2021</small></details>
+          <details><summary><span>0.69</span> Old Questions</summary></details>
+        </aside>
+      </div>
+    </section>
+
+    <section class="mechanism-section" id="documentation" aria-labelledby="mechanism-title">
+      <div class="section-heading compact">
+        <h2 id="mechanism-title">No separate search.</h2>
+        <p>Palimpsest stays beside your writing in Obsidian.</p>
+      </div>
+      <ol class="mechanism-flow">
+        <li><span>01</span><h3>Index locally</h3><p>Your Markdown notes are split into passages and embedded through your local Ollama service.</p></li>
+        <li><span>02</span><h3>Keep writing</h3><p>After you pause, the current note becomes a semantic query. No keywords and no context switch.</p></li>
+        <li><span>03</span><h3>Rediscover</h3><p>Related source passages appear in the sidebar, ready to open, link, or quote.</p></li>
+      </ol>
+    </section>
+
+    <section class="local-section" aria-labelledby="local-title">
+      <div class="local-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div>
+        <h2 id="local-title">Your archive stays<br>on your machine.</h2>
+        <p>Embedding and retrieval run through Ollama. The vector index lives in local IndexedDB and is isolated by Vault.</p>
+      </div>
+      <dl>
+        <div><dt>Runtime</dt><dd>Desktop only</dd></div>
+        <div><dt>Embedding</dt><dd>Local Ollama</dd></div>
+        <div><dt>Default model</dt><dd>qwen3-embedding:0.6b</dd></div>
+        <div><dt>Cloud API</dt><dd>Not required</dd></div>
+      </dl>
+    </section>
+
+    <section class="install-section" aria-labelledby="install-title">
+      <div>
+        <h2 id="install-title">Bring the past<br>back into view.</h2>
+        <p>Palimpsest is currently a desktop beta. Install it through BRAT, build the local index, and return to writing.</p>
+        <a class="button button-primary" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">Install with BRAT</a>
+      </div>
+      <ol>
+        <li><span>01</span><p>Install and enable BRAT in Obsidian.</p></li>
+        <li><span>02</span><p>Add <code>github.com/RunMintOn/Palimpsest</code>.</p></li>
+        <li><span>03</span><p>Start Ollama, open Palimpsest, and build the index.</p></li>
+      </ol>
+    </section>
+
+    <footer>
+      <a class="footer-brand" href="#main">Palimpsest</a>
+      <p>An Obsidian side channel to your past.</p>
+      <div><a href="https://github.com/RunMintOn/Palimpsest">GitHub</a><a href="https://github.com/RunMintOn/Palimpsest/issues">Issues</a><span>MIT License</span></div>
+    </footer>
+  </main>
+  <script src="../app.js"></script>
+</body>
+</html>

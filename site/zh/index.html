@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Palimpsest 会在你书写时，让 Obsidian 旧笔记中与当下相关的原文片段重新浮现。">
+  <title>Palimpsest — 重新遇见过去的自己</title>
+  <link rel="alternate" hreflang="en" href="../en/">
+  <link rel="alternate" hreflang="zh-CN" href="../zh/">
+  <link rel="alternate" hreflang="x-default" href="../">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alike&family=Sometype+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body class="locale-zh">
+  <a class="skip-link" href="#main">跳到正文</a>
+  <main id="main">
+    <section class="hero comp-frame" aria-labelledby="hero-title">
+      <header class="masthead r-masthead-rule" data-region="masthead-rule">
+        <div class="masthead-left">
+          <a class="brand" href="#main" aria-label="Palimpsest 首页">
+            <img class="brand-mark" data-region="brand-mark" src="../obsidian-logo-gradient.svg" alt="">
+            <span class="brand-name r-brand-name" data-region="brand-name">Palimpsest</span>
+          </a>
+          <nav aria-label="主导航">
+            <a class="nav-about r-nav-about" data-region="nav-about" href="#about">关于</a>
+            <a href="#preview">界面预览</a>
+            <a class="nav-docs r-nav-documentation" data-region="nav-documentation" href="#documentation">工作原理</a>
+          </nav>
+        </div>
+        <div class="masthead-right">
+          <div class="language-switch" aria-label="语言">
+            <span aria-current="page">中文</span><span aria-hidden="true">/</span><a href="../en/" lang="en" data-language="en">EN</a>
+          </div>
+          <a class="button button-primary nav-install r-nav-install" data-region="nav-install" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">通过 BRAT 安装</a>
+        </div>
+      </header>
+
+      <div class="chart" aria-label="当前笔记与三段旧笔记之间的语义关系示意图">
+        <svg class="chart-field" viewBox="0 0 1586 992" role="img" aria-labelledby="chart-title chart-description">
+          <title id="chart-title">在当下文字周围重新浮现的旧笔记</title>
+          <desc id="chart-description">三篇旧笔记因语意相关，与当前所写相连。</desc>
+          <defs>
+            <linearGradient id="relation-one-gradient" gradientUnits="userSpaceOnUse" x1="438" y1="279" x2="899" y2="331">
+              <stop offset="0" stop-color="#6748ff" stop-opacity=".28"/>
+              <stop offset=".22" stop-color="#6748ff" stop-opacity=".7"/>
+              <stop offset="1" stop-color="#8e72ff"/>
+            </linearGradient>
+            <linearGradient id="relation-two-gradient" gradientUnits="userSpaceOnUse" x1="640" y1="477" x2="902" y2="346">
+              <stop offset="0" stop-color="#6748ff" stop-opacity=".25"/>
+              <stop offset=".2" stop-color="#6748ff" stop-opacity=".72"/>
+              <stop offset="1" stop-color="#8e72ff"/>
+            </linearGradient>
+            <linearGradient id="relation-three-gradient" gradientUnits="userSpaceOnUse" x1="954" y1="349" x2="1224" y2="518">
+              <stop offset="0" stop-color="#8e72ff"/>
+              <stop offset=".9" stop-color="#6748ff" stop-opacity=".72"/>
+              <stop offset="1" stop-color="#39d8df" stop-opacity=".28"/>
+            </linearGradient>
+            <filter id="semantic-soft" x="-15%" y="-25%" width="130%" height="150%">
+              <feGaussianBlur stdDeviation="4"/>
+            </filter>
+            <filter id="draft-wobble" x="-2%" y="-3%" width="104%" height="106%">
+              <feTurbulence type="fractalNoise" baseFrequency=".006 .04" numOctaves="2" seed="8" result="draft-noise"/>
+              <feDisplacementMap in="SourceGraphic" in2="draft-noise" scale=".75" xChannelSelector="R" yChannelSelector="B"/>
+            </filter>
+          </defs>
+          <g class="chart-grid" aria-hidden="true">
+            <circle cx="929" cy="333" r="170"/>
+            <circle cx="929" cy="333" r="304"/>
+            <circle cx="929" cy="333" r="650"/>
+            <path class="field-axis field-axis-secondary" d="M590 35V194"/>
+            <path class="field-axis" d="M929 31V805"/>
+            <path class="field-ticks" d="M583 35h14M583 185h14M923 145h12M926 216h6M923 333h12M926 407h6M923 485h12M926 595h6M923 694h12M926 793h6"/>
+            <path class="archive-sweep" d="M232 190C270 421 500 554 842 572C1034 582 1184 552 1302 505"/>
+            <g class="star-points">
+              <path d="M86 294h4M88 292v4M241 430h8M245 426v8M533 135h4M535 133v4M1128 198h4M1130 196v4M1057 686h4M1059 684v4M1323 747h4M1325 745v4M786 769h8M790 765v8M1282 724h4M1284 722v4"/>
+            </g>
+            <g class="compass" transform="translate(1488 277)">
+              <path d="M0-31V31M-31 0H31"/>
+              <text x="0" y="-41">N</text><text x="0" y="48">S</text><text x="-45" y="4">W</text><text x="39" y="4">E</text>
+            </g>
+          </g>
+          <g class="relation-auras" aria-hidden="true">
+            <path d="M438 279L899 331"/>
+            <path d="M640 477L902 346"/>
+            <path d="M954 349L1224 518"/>
+          </g>
+          <g class="semantic-paths" aria-hidden="true">
+            <path class="relation relation-one" data-region="relation-one" d="M438 279L899 331"/>
+            <path class="relation relation-two" data-region="relation-two" d="M640 477L902 346"/>
+            <path class="relation relation-three" data-region="relation-three" d="M954 349L1224 518"/>
+            <text x="596" y="280" transform="rotate(8 596 280)">语意相通</text>
+            <text x="762" y="419" transform="rotate(-27 762 419)">主题相承</text>
+            <text x="1060" y="433" transform="rotate(32 1060 433)">彼此补照</text>
+          </g>
+        </svg>
+
+        <article class="observation note-one" aria-label="相关笔记：注意力即爱">
+          <span class="observation-number">01</span>
+          <span class="marker" data-region="note-one-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-one-title" data-region="note-one-title">2022-04-17 · 注意力即爱</p>
+          <blockquote class="observation-quote r-note-one-quote" data-region="note-one-quote">“目光落向哪里，<br>生命便在哪里生长。”</blockquote>
+          <p class="coordinates r-note-one-coordinates" data-region="note-one-coordinates">(-0.73, 0.41)</p>
+        </article>
+
+        <article class="observation note-two" aria-label="相关笔记：回返">
+          <span class="observation-number">02</span>
+          <span class="marker" data-region="note-two-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-two-title" data-region="note-two-title">2021-11-02 · 回返</p>
+          <blockquote class="observation-quote r-note-two-quote" data-region="note-two-quote">“此刻赋予语境，<br>旧日想法便重新显现。”</blockquote>
+          <p class="coordinates r-note-two-coordinates" data-region="note-two-coordinates">(-0.42, -0.28)</p>
+        </article>
+
+        <article class="observation note-three" aria-label="相关笔记：旧日之问">
+          <span class="observation-number">03</span>
+          <span class="marker" data-region="note-three-marker" aria-hidden="true"><i></i></span>
+          <p class="observation-title r-note-three-title" data-region="note-three-title">2020-08-30 · 旧日之问</p>
+          <blockquote class="observation-quote r-note-three-quote" data-region="note-three-quote">“有些问题静待，<br>直到我们认出它们。”</blockquote>
+          <p class="coordinates r-note-three-coordinates" data-region="note-three-coordinates">(0.68, -0.33)</p>
+        </article>
+
+        <article class="current-observation">
+          <span class="current-marker" data-region="current-marker" aria-hidden="true"><i></i></span>
+          <p class="current-label r-current-label" data-region="current-label">当前笔记</p>
+          <blockquote class="current-sentence r-current-sentence" data-region="current-sentence">“也许，注意力的要义不在专注，<br>而在我们选择回到何处。”</blockquote>
+          <p class="current-coordinates r-current-coordinates" data-region="current-coordinates">(0.00, 0.00)</p>
+        </article>
+      </div>
+
+      <div class="hero-copy">
+        <h1 id="hero-title" class="r-hero-headline" data-region="hero-headline">你写下的，<br>从来不止此刻。</h1>
+        <p class="hero-descriptor r-hero-descriptor" data-region="hero-descriptor">新字落处，旧墨自现。</p>
+        <p class="hero-facts r-hero-facts" data-region="hero-facts">桌面端 Beta&nbsp; · &nbsp;支持 Obsidian 1.12+&nbsp; · &nbsp;由 Ollama 在本地运行</p>
+        <div class="hero-actions">
+          <a class="button button-primary r-hero-install" data-region="hero-install" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">通过 BRAT 安装</a>
+          <a class="button button-secondary r-hero-github" data-region="hero-github" href="https://github.com/RunMintOn/Palimpsest">在 GitHub 查看</a>
+        </div>
+      </div>
+
+      <ol class="process-strip r-process-rule" data-region="process-rule" aria-label="Palimpsest 的工作方式">
+        <li class="r-process-index" data-region="process-index"><span>01</span> 本地建立索引</li>
+        <li class="r-process-write" data-region="process-write"><span>02</span> 继续书写</li>
+        <li class="r-process-rediscover" data-region="process-rediscover"><span>03</span> 重逢旧文</li>
+      </ol>
+    </section>
+
+    <section class="archive-section" id="about" aria-labelledby="archive-title">
+      <div class="section-heading">
+        <h2 id="archive-title">旧日所写，从未消失。<br>它们只待恰当的此刻。</h2>
+        <p>写下一段想法并不难。难的是，在它再次重要时，与它重逢。</p>
+      </div>
+      <div class="time-field" aria-label="旧笔记重新回到当下">
+        <div class="time-entry">
+          <time datetime="2020-08-30">2020</time>
+          <div><span>旧日之问</span><p>“有些问题静待，直到我们认出它们。”</p></div>
+        </div>
+        <div class="time-entry">
+          <time datetime="2021-11-02">2021</time>
+          <div><span>回返</span><p>“此刻赋予语境，旧日想法便重新显现。”</p></div>
+        </div>
+        <div class="time-entry">
+          <time datetime="2022-04-17">2022</time>
+          <div><span>注意力即爱</span><p>“目光落向哪里，生命便在哪里生长。”</p></div>
+        </div>
+        <div class="present-entry">
+          <span>当前笔记</span>
+          <p>“也许，注意力的要义<br>不在专注，而在我们选择<br>回到何处。”</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="interface-section" id="preview" aria-labelledby="interface-title">
+      <div class="interface-copy">
+        <h2 id="interface-title">读到原文，<br>不止文件名。</h2>
+        <p>不必离开草稿，也能读到旧文原有的语境。<br>打开出处，或拖入当前笔记作为链接或引用。</p>
+        <ul>
+          <li>就地呈现 Markdown</li>
+          <li>按全文或选区查找</li>
+          <li>只增量更新本地索引</li>
+        </ul>
+      </div>
+      <div class="obsidian-window" aria-label="Obsidian 中的 Palimpsest 侧边栏示意图">
+        <div class="window-bar"><i></i><i></i><i></i><span>谈注意力.md</span></div>
+        <div class="editor-pane">
+          <span>谈注意力</span>
+          <h3>我们选择回到何处</h3>
+          <p>也许，注意力的要义不在专注，而在我们选择回到何处。</p>
+          <b class="caret" aria-hidden="true"></b>
+        </div>
+        <aside class="results-pane">
+          <div class="results-heading"><strong>Palimpsest</strong><span>3 个片段</span></div>
+          <details open><summary><span>0.82</span> 注意力即爱</summary><blockquote>目光落向哪里，生命便在哪里生长。</blockquote><small>日记 › 2022</small></details>
+          <details open><summary><span>0.76</span> 回返</summary><blockquote>此刻赋予语境，旧日想法便重新显现。</blockquote><small>反思 › 2021</small></details>
+          <details><summary><span>0.69</span> 旧日之问</summary></details>
+        </aside>
+      </div>
+    </section>
+
+    <section class="mechanism-section" id="documentation" aria-labelledby="mechanism-title">
+      <div class="section-heading compact">
+        <h2 id="mechanism-title">无需停笔搜索。</h2>
+        <p>Palimpsest 就在 Obsidian 侧边，随写作安静运行。</p>
+      </div>
+      <ol class="mechanism-flow">
+        <li><span>01</span><h3>在本地建立索引</h3><p>Palimpsest 按标题和段落切分 Markdown 笔记，再通过本机 Ollama 生成向量。</p></li>
+        <li><span>02</span><h3>继续书写</h3><p>当你停笔片刻，Palimpsest 便依照当前笔记的语意寻找旧文。无需关键词，也不用离开写作现场。</p></li>
+        <li><span>03</span><h3>重逢旧文</h3><p>相关原文会在侧边栏浮现，可随时打开出处、插入链接或引作引用。</p></li>
+      </ol>
+    </section>
+
+    <section class="local-section" aria-labelledby="local-title">
+      <div class="local-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div>
+        <h2 id="local-title">你的笔记，始终留在<br>自己的电脑上。</h2>
+        <p>向量生成与检索都在本机通过 Ollama 完成。索引保存在本地 IndexedDB 中，不同 Vault 彼此隔离。</p>
+      </div>
+      <dl>
+        <div><dt>运行环境</dt><dd>仅支持桌面端</dd></div>
+        <div><dt>向量生成</dt><dd>本机 Ollama</dd></div>
+        <div><dt>默认模型</dt><dd>qwen3-embedding:0.6b</dd></div>
+        <div><dt>云端 API</dt><dd>无需调用</dd></div>
+      </dl>
+    </section>
+
+    <section class="install-section" aria-labelledby="install-title">
+      <div>
+        <h2 id="install-title">让旧日所写，<br>重回眼前。</h2>
+        <p>Palimpsest 目前处于桌面端 Beta。通过 BRAT 安装，建立本地索引，然后照常写下去。</p>
+        <a class="button button-primary" href="https://github.com/RunMintOn/Palimpsest#beta-installation-with-brat-recommended">通过 BRAT 安装</a>
+      </div>
+      <ol>
+        <li><span>01</span><p>在 Obsidian 中安装并启用 BRAT。</p></li>
+        <li><span>02</span><p>添加 <code>github.com/RunMintOn/Palimpsest</code>。</p></li>
+        <li><span>03</span><p>启动 Ollama，在 Obsidian 中打开 Palimpsest 并建立索引。</p></li>
+      </ol>
+    </section>
+
+    <footer>
+      <a class="footer-brand" href="#main">Palimpsest</a>
+      <p>在 Obsidian 中，让过去的文字回到当下。</p>
+      <div><a href="https://github.com/RunMintOn/Palimpsest">GitHub</a><a href="https://github.com/RunMintOn/Palimpsest/issues">问题反馈</a><span>MIT 许可证</span></div>
+    </footer>
+  </main>
+  <script src="../app.js"></script>
+</body>
+</html>

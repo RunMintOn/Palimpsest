@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Choose the language for the Palimpsest website. 选择 Palimpsest 网站的语言。">
+  <title>Palimpsest — Choose your language</title>
+  <link rel="alternate" hreflang="en" href="en/">
+  <link rel="alternate" hreflang="zh-CN" href="zh/">
+  <link rel="alternate" hreflang="x-default" href="./">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alike&family=Sometype+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="language.js"></script>
+</head>
+<body class="language-gate-body">
+  <main class="language-gate" aria-labelledby="language-title">
+    <div class="language-gate-brand" aria-hidden="true">
+      <svg class="brand-mark" viewBox="0 0 44 50">
+        <path d="M22 1 39 17 34 40 22 49 8 39 4 18Z" fill="#6c4cff"/>
+        <path d="m22 1 4 20-14-8Z" fill="#9a82ff"/>
+        <path d="m4 18 18 3-14 18Z" fill="#4930c7"/>
+        <path d="m22 21 17-4-5 23Z" fill="#7c5cff"/>
+        <path d="m8 39 14-18 12 19-12 9Z" fill="#5a3ce1"/>
+      </svg>
+      <span>Palimpsest</span>
+    </div>
+    <div class="language-gate-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="language-gate-copy">
+      <h1 id="language-title">Choose your language.<br><span lang="zh-CN">选择语言。</span></h1>
+      <p>The site normally opens in your browser language.<br><span lang="zh-CN">网站通常会根据浏览器语言自动打开。</span></p>
+      <nav aria-label="Language selection">
+        <a class="button button-primary" href="en/" lang="en" data-language="en">English</a>
+        <a class="button button-secondary" href="zh/" lang="zh-CN" data-language="zh-CN">中文</a>
+      </nav>
+    </div>
+  </main>
+</body>
+</html>
