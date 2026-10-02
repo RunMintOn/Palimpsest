@@ -138,10 +138,10 @@ test("chunk IDs distinguish repeated occurrences without making unrelated edits 
   assert.doesNotThrow(() => index.fullReplacement(identity, repeated.map((chunk) => ({ ...chunk, vector: [1, 0, 0] })), indexScope([])), "fixed duplicate-content chunks are accepted by PersistentIndex");
 });
 
-test("query source uses one complete buffer or one complete selection with no local truncation", () => {
+test("query source uses one complete paragraph or one complete selection with no local truncation", () => {
   const source = new QuerySourceCoordinator();
   const fullBuffer = "# 标题\n\n" + "完整笔记内容。".repeat(500);
-  assert.deepEqual(source.sourceForCurrentSelection(fullBuffer, ""), { kind: "document", text: fullBuffer });
+  assert.deepEqual(source.sourceForCurrentSelection(fullBuffer, "", 2), { kind: "paragraph", text: "完整笔记内容。".repeat(500), startLine: 2 });
   assert.ok(fullBuffer.length > 1400);
   const selection = "完整选区内容。".repeat(200);
   const action = source.selectionButton(selection);
@@ -183,26 +183,26 @@ test("follow selection waits for valid text and stays active until explicitly di
   assert.equal(source.presentation("新的有效选区内容").kind, "following");
 });
 
-test("adopting a document source clears a completed one-shot scope without changing follow mode", () => {
+test("adopting a paragraph source clears a completed one-shot scope without changing follow mode", () => {
   const source = new QuerySourceCoordinator();
   const oneShot = source.selectionButton("足够长的选区文本用于单次查询");
   assert.equal(oneShot.kind, "one-shot");
   if (oneShot.kind === "one-shot") source.adopt(oneShot.source);
   assert.equal(source.presentation("").kind, "once");
-  assert.deepEqual(source.sourceForCurrentSelection("仅计算的全文候选", ""), { kind: "document", text: "仅计算的全文候选" });
+  assert.deepEqual(source.sourceForCurrentSelection("仅计算的段落候选", "", 0), { kind: "paragraph", text: "仅计算的段落候选", startLine: 0 });
   assert.equal(source.presentation("").kind, "once", "candidate lookup has no range-label side effect");
-  source.adopt({ kind: "document", text: "切换笔记后的完整正文" });
+  source.adopt({ kind: "paragraph", text: "切换笔记后的完整段落", startLine: 0 });
   assert.deepEqual(source.presentation(""), {
-    kind: "document", text: "查询范围：当前笔记", tooltip: "开启跟随选区查询"
+    kind: "paragraph", text: "查询范围：当前段落", tooltip: "开启跟随选区查询"
   });
 
   source.selectionButton("");
-  source.adopt({ kind: "document", text: "跟随模式中的候选全文不应关闭模式" });
+  source.adopt({ kind: "paragraph", text: "跟随模式中的候选段落不应关闭模式", startLine: 0 });
   assert.equal(source.isFollowingSelection, true);
   assert.equal(source.presentation("").kind, "waiting");
 });
 
-test("one-shot document adoption covers file-switch and refresh semantics", () => {
+test("one-shot paragraph adoption covers file-switch and refresh semantics", () => {
   const source = new QuerySourceCoordinator();
   const beginOneShot = () => {
     const action = source.selectionButton("足够长的选区文本用于单次查询");
@@ -210,11 +210,11 @@ test("one-shot document adoption covers file-switch and refresh semantics", () =
     if (action.kind === "one-shot") source.adopt(action.source);
   };
   beginOneShot();
-  source.adopt({ kind: "document", text: "另一篇笔记的完整 buffer" });
-  assert.equal(source.presentation("").kind, "document", "file switch schedules document source");
+  source.adopt({ kind: "paragraph", text: "另一篇笔记的当前段落", startLine: 0 });
+  assert.equal(source.presentation("").kind, "paragraph", "file switch schedules paragraph source");
   beginOneShot();
-  source.adopt({ kind: "document", text: "刷新当前笔记的完整 buffer" });
-  assert.equal(source.presentation("").kind, "document", "refresh schedules document source");
+  source.adopt({ kind: "paragraph", text: "刷新当前笔记的当前段落", startLine: 0 });
+  assert.equal(source.presentation("").kind, "paragraph", "refresh schedules paragraph source");
 });
 
 test("follow selection presentation distinguishes no, whitespace, short, and valid selections", () => {
@@ -513,7 +513,8 @@ test("a current file-open query retries when its editor buffer finishes loading 
     bufferCurrent: false,
     markdownViewCurrent: true,
     pathCurrent: true,
-    selectionCurrent: true
+    selectionCurrent: true,
+    paragraphCurrent: false
   }), "retry-current-buffer");
 });
 
@@ -524,7 +525,8 @@ test("a response never retries after a newer query has replaced it", () => {
     bufferCurrent: false,
     markdownViewCurrent: true,
     pathCurrent: true,
-    selectionCurrent: true
+    selectionCurrent: true,
+    paragraphCurrent: false
   }), "discard");
 });
 

@@ -5,6 +5,7 @@ export interface QueryRequestState {
   markdownViewCurrent: boolean;
   pathCurrent: boolean;
   selectionCurrent: boolean;
+  paragraphCurrent: boolean;
 }
 
 export type QueryResponseDisposition = "apply" | "retry-current-buffer" | "discard";
@@ -15,7 +16,8 @@ export function queryRequestIsCurrent(state: QueryRequestState): boolean {
     state.bufferCurrent &&
     state.markdownViewCurrent &&
     state.pathCurrent &&
-    state.selectionCurrent;
+    state.selectionCurrent &&
+    state.paragraphCurrent;
 }
 
 /** Decides whether a completed embedding response may still update the sidebar. */

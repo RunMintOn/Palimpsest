@@ -16,7 +16,7 @@ your workspace and brings older notes back into view while you write.
 |---|---|---|
 | Who starts it | You | It does |
 | When | When you remember to search | While you are writing |
-| What it searches | Keywords you enter | The semantics of the current note |
+| What it searches | Keywords you enter | The semantics of the current paragraph |
 | Results | A list of file names | Relevant source passages, rendered for reading |
 
 Your past writing is not waiting to be searched. It is waiting to be
@@ -32,7 +32,7 @@ Palimpsest works in three stages:
    knowledge passages by headings and paragraphs, generates an embedding for
    each passage, and stores the vectors in a local index.
 2. **Search while you write**: After you stop typing for about 800 ms, the
-   plugin uses the complete current note as an embedding query and searches
+   plugin uses the complete paragraph at the cursor as an embedding query and searches
    for the semantically closest older passages.
 3. **Show the results**: Matching passages are sorted by similarity and shown
    in the right sidebar. Click a result to open the source note, or drag it to
@@ -148,12 +148,15 @@ synchronization, and recovery procedures.
 
 ## Features
 
-- **Full-note queries**: After about 800 ms of inactivity, the complete current
-  Markdown editor buffer is used as a semantic query.
+- **Current-paragraph queries**: After about 800 ms of inactivity, the complete
+  paragraph at the cursor is used as a semantic query. Blank lines, headings,
+  and paragraphs shorter than 8 non-whitespace characters do not fall back to
+  the full note. Moving to another paragraph invalidates the previous query.
 - **Selection queries**: The selection button immediately runs a one-shot query
   for a valid selection of at least 8 non-whitespace characters. With no
   selection, it enters follow-selection mode; click again to exit and return
-  to full-note queries.
+  to current-paragraph queries. Select all and use the selection button for an
+  explicit full-note query. Reading view supports explicit selection queries.
 - **Passage retrieval**: Shows relevant passages instead of entire notes.
 - **Markdown rendering**: Bold text, lists, blockquotes, code blocks, and
   internal links render correctly in source passages.

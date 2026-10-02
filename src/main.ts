@@ -25,7 +25,7 @@ import { AutomaticWorkActions, AutomaticWorkCoordinator } from "./automatic-work
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
 import { queryRequestIsCurrent, queryResponseDisposition, type QueryRequestState } from "./query-response-disposition";
-import { currentQuerySelection, isValidQueryText, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
+import { currentQuerySelection, isValidQueryText, paragraphQuerySource, sameQueryParagraph, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
 import { rankChunks } from "./retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
@@ -57,6 +57,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   private latestMarkdownView: MarkdownView | undefined;
   private queryButtonSelection: { view: MarkdownView; text: string } | undefined;
   private lastFollowSelection: { view: MarkdownView; text: string } | undefined;
+  private lastParagraph: { view: MarkdownView; source: QuerySource } | undefined;
   private lastActivatedMarkdownPath: string | undefined;
   private state: SidebarState = { kind: "waiting-input", message: "等待输入" };
   private results: SearchResult[] = [];
@@ -402,7 +403,16 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     const selection = editorView.state.sliceDoc(selectionRange.from, selectionRange.to);
     const editorBelongsToMarkdown = Boolean(markdown?.file && markdown.contentEl.contains(editorView.dom));
     if (!editorBelongsToMarkdown || !markdown) return;
-    this.onFollowSelectionChanged(markdown, selection);
+    if (this.querySource.isFollowingSelection) {
+      this.onFollowSelectionChanged(markdown, selection);
+      return;
+    }
+    if (markdown.getMode() !== "source") return;
+    const source = paragraphQuerySource(editorView.state.doc.toString(), editorView.state.doc.lineAt(selectionRange.head).number - 1);
+    if (this.lastParagraph?.view === markdown && sameQueryParagraph(this.lastParagraph.source, source)) return;
+    this.clearQueryTimers();
+    this.queryGate.invalidate();
+    if (this.automaticWork.allowed) this.scheduleResolvedQuery({ immediate: false, reason: "selection-change" }, source, markdown.editor, markdown);
   }
 
   /** Reading view exposes browser selection, not MarkdownView.editor selection. */
@@ -465,24 +475,27 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   private noteMarkdownActivated(view: MarkdownView): void {
     const path = view.file?.path;
+    const sameView = this.latestMarkdownView === view;
     this.latestMarkdownView = view;
-    if (path && path === this.lastActivatedMarkdownPath) return;
+    if (sameView && path && path === this.lastActivatedMarkdownPath) return;
+    this.clearQueryTimers();
+    this.queryGate.invalidate();
     this.lastActivatedMarkdownPath = path;
     const schedule = this.lifecycle.noteMarkdownActivated();
     if (schedule) this.scheduleQueryFromCurrentEditor(schedule, view.editor, view);
   }
 
-  /** The one production entry point for automatic document/follow-selection queries. */
+  /** The one production entry point for automatic paragraph/follow-selection queries. */
   private scheduleQueryFromCurrentEditor(schedule: QuerySchedule, suppliedEditor?: Editor, suppliedView?: MarkdownView): void {
     if (!this.automaticWork.allowed) return;
     const view = suppliedView ?? this.latestMarkdownView;
     const editor = suppliedEditor ?? view?.editor;
     if (!view || !editor) return;
-    const source = this.querySource.sourceForCurrentSelection(editor.getValue(), this.selectedQueryText(view));
+    const source = this.querySource.sourceForCurrentSelection(editor.getValue(), this.selectedQueryText(view), view.getMode() === "source" ? editor.getCursor().line : undefined);
     if (!source) {
       this.clearQueryTimers();
       this.queryGate.invalidate();
-      this.present(this.state, this.results);
+      this.present({ kind: "waiting-input", message: "等待选择至少 8 个非空白字符" }, this.results);
       return;
     }
     this.scheduleResolvedQuery(schedule, source, editor, view);
@@ -490,6 +503,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
 
   private scheduleResolvedQuery(schedule: QuerySchedule, source: QuerySource, editor: Editor, view: MarkdownView): void {
     this.querySource.adopt(source);
+    if (source.kind === "paragraph") this.lastParagraph = { view, source };
     this.clearQueryTimers();
     const generation = this.queryGate.begin();
     const buffer = editor.getValue();
@@ -502,8 +516,10 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       return;
     }
     if (!isValidQueryText(source.text)) {
-      const message = source.kind === "document" ? "至少输入 8 个非空白字符后查询" : "至少选择 8 个非空白字符";
-      this.present({ kind: "waiting-input", message }, source.kind === "document" ? [] : this.results);
+      const message = source.kind === "paragraph"
+        ? view.getMode() === "source" ? "在当前段落输入至少 8 个非空白字符后查询" : "阅读视图请选中内容后查询"
+        : "至少选择 8 个非空白字符";
+      this.present({ kind: "waiting-input", message }, source.kind === "paragraph" ? [] : this.results);
       return;
     }
     if (!schedule.immediate) {
@@ -523,14 +539,15 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     }
     this.present({ kind: "querying", message: "查询中…" }, this.results);
     const started = performance.now();
-    this.modelTimer = window.setTimeout(() => {
-      if (this.queryGate.isCurrent(generation)) this.present({ kind: "loading-model", message: "模型加载中/查询中…" }, this.results);
+    const modelTimer = window.setTimeout(() => {
+      if (this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) this.present({ kind: "loading-model", message: "模型加载中/查询中…" }, this.results);
     }, 600);
+    this.modelTimer = modelTimer;
     try {
       const response = await this.provider().embedQuery(source.text);
-      if (this.modelTimer) window.clearTimeout(this.modelTimer);
+      window.clearTimeout(modelTimer);
       const responseDisposition = queryResponseDisposition(this.queryRequestState(generation, source, editor, view, filePath, scheduledBuffer));
-      if (responseDisposition === "retry-current-buffer" && source.kind === "document") {
+      if (responseDisposition === "retry-current-buffer" && source.kind === "paragraph") {
         this.scheduleQueryFromCurrentEditor({ immediate: true, reason: "stale-response" }, editor, view);
         return;
       }
@@ -546,8 +563,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         : "索引已建立，但没有可召回片段";
       this.present({ kind: "complete", message, latencyMs }, results);
     } catch (error) {
-      if (this.modelTimer) window.clearTimeout(this.modelTimer);
-      if (!this.queryGate.isCurrent(generation) || !this.automaticWork.allowed) return;
+      window.clearTimeout(modelTimer);
+      if (!this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) return;
       const message = error instanceof EmbeddingError && error.kind === "connection" ? "Ollama 不可用" : `查询失败：${error instanceof Error ? error.message : String(error)}`;
       this.present({ kind: error instanceof EmbeddingError && error.kind === "connection" ? "ollama-unavailable" : "query-failed", message }, this.results);
     }
@@ -560,7 +577,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       bufferCurrent: editor.getValue() === scheduledBuffer,
       markdownViewCurrent: this.latestMarkdownView === view,
       pathCurrent: view.file?.path === filePath,
-      selectionCurrent: source.kind !== "selection-follow" || this.selectedQueryText(view) === source.text
+      selectionCurrent: source.kind !== "selection-follow" || this.selectedQueryText(view) === source.text,
+      paragraphCurrent: source.kind !== "paragraph" || (view.getMode() === "source" && sameQueryParagraph(source, paragraphQuerySource(editor.getValue(), editor.getCursor().line)))
     };
   }
 
