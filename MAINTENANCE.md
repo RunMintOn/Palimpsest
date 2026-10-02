@@ -3,6 +3,10 @@
 所有命令从项目根目录运行。代码真相源是 `src/`；`main.js` 是由构建生成的
 Obsidian 产物，不直接修改。
 
+当前源码混合检索版仅完成 macOS ARM64 native 安装验收，完整安装流程见
+[NATIVE.md](NATIVE.md)。下文旧 Windows Junction、三文件 Release 和 Windows
+同步说明属于已发布 beta 的维护记录，不可据此部署当前 native 版。
+
 ## 验证
 
 首次安装依赖或锁文件变化后运行：
@@ -110,7 +114,25 @@ git push origin 0.1.0
 将示例版本替换为实际版本。tag 必须与两个 JSON 文件中的 `version` 完全一致，
 不要只改其中一个。Release 创建后，测试者可以通过 BRAT 安装该版本。
 
+## 同步到本机 Vault
+
+构建后，复制运行文件到指定 Vault（不使用软链接）：
+
+```bash
+npm run build:native
+bash scripts/sync-to-vault.sh /absolute/path/to/test-vault
+```
+
+目标 Vault 的 `.obsidian/plugins` 目录必须已存在，插件目录不能是软链接。
+该命令转交 native 安装脚本，复制 `main.js`、`manifest.json`、`styles.css`
+和完整 `runtime/`，保留已有 `data.json`、Vault 身份与 IndexedDB。
+安装后在 Obsidian 启用或重载插件；兼容的已有向量无需重新生成，关键词
+缓存在首次有效查询时从已提交片段建立。正式 Vault 安装需用户明确要求。
+
 ## 提交时同步 Windows 插件目录
+
+当前 Mac native 开发提交使用 `PALIMPSEST_SKIP_WINDOWS_SYNC=1`，避免把
+没有匹配 runtime 的构建同步到 Windows。此阶段没有跨平台安装支持。
 
 仓库包含一个可追踪的 `.githooks/pre-commit`。启用后，每次提交会先运行
 `npm run build`，再调用 `scripts/sync-to-windows.sh`，把最新的

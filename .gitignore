@@ -7,10 +7,23 @@ test-vault/
 prototypes/
 开发笔记.md
 docs/
+!/docs/
+/docs/*
+!/docs/agents/
+/docs/agents/*
+!/docs/agents/*.md
 data.json
 data.*.backup.json
 tools/find-papercuts.ps1
 issues/
+!/.scratch/zg-backend/issues/
+!/.scratch/zg-backend/issues/*.md
+
+# Machine-specific results and superseded investigation material stay local.
+/.scratch/zg-backend/probes/
+/.scratch/zg-backend/results/
+/.scratch/zg-backend/technical-findings.md
+/.scratch/zg-backend/lite-findings.md
 
 # Local design tooling and generated review output
 /.pi/skills/impeccable/

@@ -20,7 +20,7 @@ node scripts/install-native-to-vault.mjs /absolute/path/to/test-vault
 
 安装目录除 `main.js`、`manifest.json`、`styles.css` 外，需要 `runtime/`。它包含当前平台的 Zvec、native binding、Jieba资源和detect-libc，总计约30MiB，未压缩。不包含ZG、原生embedding模型或模型缓存。插件只从自己的安装目录加载这些库，不从开发仓库加载。
 
-`npm run build`只构建主bundle和执行bundle检查；`build:native`才准备本机runtime。旧的三文件同步脚本不能用于部署此native版。暂不执行Windows同步或将此bundle作为跨平台Release发布。
+`npm run build`只构建主bundle和执行bundle检查；`build:native`才准备本机runtime。`scripts/sync-to-vault.sh`已转交同一个native安装脚本。Windows三文件同步流程不能用于部署此native版，暂不将此bundle作为跨平台Release发布。
 
 在Obsidian启用或重载插件，继续使用已有本地Ollama设置。新关键词能力不要求重新生成向量；只有原有索引身份不兼容、尚未建库等情况才按现有流程建库。
 

@@ -59,3 +59,9 @@ bash scripts/sync-to-windows.sh
 - `typecheck`、相关测试和必要的构建均通过。
 - 临时诊断日志、一次性脚本和调试产物已删除，或明确放入被忽略的调查目录。
 - 最终说明改了什么、验证了什么、哪些行为仍未在真实 Obsidian 环境验证。
+
+## Agent 工作流程
+
+- 读取、发布或更新本地 spec/ticket 时，先读取 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)。
+- 设置任务状态时，参照 [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)。
+- 探索领域术语或检查 ADR 时，先读取 [`docs/agents/domain.md`](docs/agents/domain.md)。
