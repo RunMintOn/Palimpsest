@@ -1,0 +1,57 @@
+Generate one high-fidelity desktop website design image in a 16:10 landscape frame, ideally 1600×1000. Show the website straight-on with no browser chrome, no device mockup, no surrounding room, and no explanatory response. The result must look like a production-ready software landing page, not a poster, mood board, or cinematic illustration.
+
+PRODUCT CONTEXT
+Palimpsest is a desktop Obsidian plugin. While someone writes, it automatically finds semantically related passages from their older notes and shows those source passages in the Obsidian sidebar. The user does not need to stop and search. It is for people who have accumulated years of journals, reflections, excerpts, and writing material that they rarely see again. Its central value is reconnecting people with their past thinking, while also helping them reuse knowledge. Indexing and retrieval run locally with Ollama. It is currently a beta installed through BRAT.
+
+Use only these factual claims:
+- An Obsidian side channel to your past.
+- Surfaces related passages while you write.
+- Runs locally with Ollama.
+- Desktop beta for Obsidian 1.12+.
+- Install with BRAT.
+Do not invent testimonials, customer logos, ratings, installation counts, awards, prices, benchmarks, or security certifications.
+
+REQUIRED ENGLISH COPY
+Brand: Palimpsest
+Headline: Write in the present. Rediscover what you already knew.
+Descriptor: An Obsidian side channel to your past.
+Primary action: Install with BRAT
+Secondary action: View on GitHub
+Small factual line: Desktop beta · Obsidian 1.12+ · Local with Ollama
+
+Use these clearly legible illustrative notes in the product demonstration:
+CURRENT NOTE
+“Maybe attention is less about focus than what we choose to return to.”
+
+2022-04-17 · Attention is Love
+“Where attention goes, life grows.”
+
+2021-11-02 · On Returning
+“Ideas become visible again when the present gives them context.”
+
+2020-08-30 · Old Questions
+“Some questions wait until we are ready to recognize them.”
+
+DIRECTION: THE LIVING EPHEMERIS
+Build the first viewport as one vast astronomical finding chart that functions as a product demonstration. Do not use a conventional split hero or a grid of floating cards.
+
+At the top, use a quiet navigation strip about 7% of the viewport height. Put a small faceted violet crystal mark and the Palimpsest wordmark at left. Include only two restrained navigation links. Put the “Install with BRAT” action at right.
+
+Across the remaining viewport, use a deep midnight ink field. Place the CURRENT NOTE sentence near the center-right as the largest observation anchor. Arrange the three dated old-note passages around it as precise chart annotations. Connect them using fine semantic relation lines, tiny coordinate ticks, restrained orbital arcs, and small index numerals. The relationship must look functional: the current sentence causes old entries to resolve into view. Keep large regions of deliberate empty space so each recovered passage feels important.
+
+In the lower-left, place the headline, descriptor, factual line, and two actions in a compact but unmistakable conversion area. The headline must be readable immediately. At the bottom edge, reveal a small glimpse of the next section: three exact steps named INDEX LOCALLY, KEEP WRITING, and REDISCOVER.
+
+VISUAL SYSTEM
+- Deep midnight navy background, not pure black.
+- Warm off-white primary typography.
+- Decisive electric violet for the active semantic relationship.
+- One restrained teal color for secondary annotations.
+- Hairline chart notation, exact alignment, sparse labels, and strong scale contrast.
+- Typography should feel intelligent and contemporary, with a distinctive display face for the headline and a highly legible technical face for annotations.
+- Controls should be sharp and precise, not pill-shaped.
+- The page should feel quiet, exact, intimate, and alive.
+
+AVOID
+No fantasy nebula, galaxy wallpaper, magical dust, parchment, medieval room, floating generic SaaS cards, glassmorphism, glowing rounded panels, purple gradient blobs, giant centered headline, fake Obsidian logo, decorative star field, testimonials, pricing, or fabricated proof. The astronomical language must behave like a working information system, not decoration.
+
+Before producing the image, verify that a first-time visitor can understand within three seconds: this is an Obsidian plugin, it resurfaces old notes while they write, and the main action is Install with BRAT. Generate the image only.

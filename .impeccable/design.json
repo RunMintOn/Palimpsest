@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-19T07:46:28Z",
+  "title": "Design System: Palimpsest",
+  "extensions": {
+    "colorMeta": {
+      "midnight-field": {
+        "role": "neutral",
+        "displayName": "Midnight Field",
+        "canonical": "#081828",
+        "tonalRamp": ["#03080d", "#06111c", "#081828", "#16304b", "#31516f", "#607d99", "#a5b7c8", "#eaf0f5"]
+      },
+      "hero-field": {
+        "role": "neutral",
+        "displayName": "Hero Field",
+        "canonical": "#091625",
+        "tonalRamp": ["#03080e", "#06101c", "#091625", "#172d46", "#34506b", "#637d96", "#a7b8c7", "#ebf0f4"]
+      },
+      "midnight-deep": {
+        "role": "neutral",
+        "displayName": "Midnight Deep",
+        "canonical": "#061321",
+        "tonalRamp": ["#02070c", "#040d16", "#061321", "#122b43", "#2d4d68", "#5c7992", "#a3b5c5", "#e9eff4"]
+      },
+      "observation-violet": {
+        "role": "primary",
+        "displayName": "Observation Violet",
+        "canonical": "#6748ff",
+        "tonalRamp": ["#160b52", "#28118d", "#3c20c3", "#5335e7", "#6748ff", "#8c76ff", "#bcb0ff", "#eeeaff"]
+      },
+      "relation-cyan": {
+        "role": "secondary",
+        "displayName": "Relation Cyan",
+        "canonical": "#39d8df",
+        "tonalRamp": ["#062f32", "#07585d", "#07858b", "#12afb6", "#39d8df", "#70e7eb", "#aceff2", "#ebfcfd"]
+      },
+      "warm-ink": {
+        "role": "neutral",
+        "displayName": "Warm Ink",
+        "canonical": "#f2f2f2",
+        "tonalRamp": ["#262626", "#484848", "#6d6d6d", "#949494", "#bcbcbc", "#d9d9d9", "#f2f2f2", "#ffffff"]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "#8ba0ba",
+        "tonalRamp": ["#18212c", "#29394a", "#40566d", "#5d758e", "#7d94ad", "#a5b6c8", "#ced8e2", "#f1f5f8"]
+      },
+      "chart-rule": {
+        "role": "neutral",
+        "displayName": "Chart Rule",
+        "canonical": "#29405a",
+        "tonalRamp": ["#091018", "#111e2b", "#1b2e41", "#29405a", "#46617c", "#70879e", "#aab9c7", "#edf1f4"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Reflective Display", "purpose": "English product promises and major section claims." },
+      "body": { "displayName": "Measured Body", "purpose": "English explanation, source passages, and operating context." },
+      "label": { "displayName": "Chart Label", "purpose": "Dates, coordinates, states, and short controls." },
+      "display-zh": { "displayName": "Chinese Reflective Display", "purpose": "Simplified Chinese promises and section claims with natural phrase breaks." },
+      "body-zh": { "displayName": "Chinese Body", "purpose": "Simplified Chinese explanation, navigation, and source passages." }
+    },
+    "shadows": [
+      { "name": "action-lift", "value": "0 8px 20px rgba(0,0,0,.47)", "purpose": "Primary actions at rest." },
+      { "name": "raised-interface", "value": "0 32px 80px rgba(0,0,0,.4)", "purpose": "The principal product demonstration only." },
+      { "name": "active-point", "value": "0 4px 18px rgba(0,0,0,.6)", "purpose": "Separate an active observation marker from the chart field." }
+    ],
+    "motion": [
+      { "name": "resolve", "value": "900ms cubic-bezier(.16, 1, .3, 1)", "purpose": "Reveal relationships from faint to legible." },
+      { "name": "control", "value": "180ms ease", "purpose": "Hover and focus state changes." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "900px" },
+      { "name": "mobile", "value": "520px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The principal install action on a violet measured field.",
+      "html": "<button class=\"ds-btn-primary\">INSTALL WITH BRAT</button>",
+      "css": ".ds-btn-primary{height:48px;padding:0 24px;border:1px solid #3f2bc1;border-radius:0;background:#6748ff;color:#f2f2f2;font:400 15px 'Sometype Mono',monospace;box-shadow:0 8px 20px rgba(0,0,0,.47);transition:background 180ms ease,box-shadow 240ms ease}.ds-btn-primary:hover{background:#5234d6;box-shadow:0 10px 30px rgba(0,0,0,.53)}.ds-btn-primary:focus-visible{outline:2px solid #b6a7ff;outline-offset:4px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quiet secondary action drawn with a cyan-blue chart border.",
+      "html": "<button class=\"ds-btn-secondary\">VIEW ON GITHUB</button>",
+      "css": ".ds-btn-secondary{height:48px;padding:0 24px;border:1px solid #58bcea;border-radius:0;background:#081828;color:#f2f2f2;font:400 15px 'Sometype Mono',monospace;transition:background 180ms ease,border-color 180ms ease}.ds-btn-secondary:hover{border-color:#39d8df;background:#10243a}.ds-btn-secondary:focus-visible{outline:2px solid #b6a7ff;outline-offset:4px}"
+    },
+    {
+      "name": "Masthead Navigation",
+      "kind": "nav",
+      "description": "A thin ruled navigation strip with serif identity and measured labels.",
+      "html": "<nav class=\"ds-nav\"><strong>Palimpsest</strong><a href=\"#\">ABOUT</a><a href=\"#\">DOCUMENTATION</a></nav>",
+      "css": ".ds-nav{display:flex;align-items:center;gap:32px;height:64px;padding:0 24px;border-bottom:1px solid #29405a;background:#081828;color:#f2f2f2}.ds-nav strong{margin-right:auto;font:400 25px Alike,serif}.ds-nav a{color:#dce1e7;font:400 12px 'Sometype Mono',monospace;text-decoration:none}.ds-nav a:hover{color:#39d8df}.ds-nav a:focus-visible{outline:2px solid #b6a7ff;outline-offset:4px}"
+    },
+    {
+      "name": "Source Passage",
+      "kind": "card",
+      "description": "A recovered note shown through hierarchy and rules rather than card chrome.",
+      "html": "<article class=\"ds-passage\"><small>2022-04-17 · ATTENTION IS LOVE</small><blockquote>Where attention goes, life grows.</blockquote></article>",
+      "css": ".ds-passage{max-width:340px;padding:18px 0;border-block:1px solid #29405a;background:#081828;color:#f2f2f2}.ds-passage small{color:#39d8df;font:400 11px 'Sometype Mono',monospace}.ds-passage blockquote{margin:12px 0 0;font:400 20px/1.45 Alike,serif}"
+    },
+    {
+      "name": "Observation Marker",
+      "kind": "custom",
+      "description": "A measured crosshair for a recovered passage.",
+      "html": "<span class=\"ds-marker\" aria-label=\"Recovered passage\"><i></i></span>",
+      "css": ".ds-marker{position:relative;display:grid;width:46px;height:46px;place-items:center}.ds-marker:before,.ds-marker:after{content:'';position:absolute;background:#4d7895}.ds-marker:before{width:68px;height:1px}.ds-marker:after{width:1px;height:68px}.ds-marker i{z-index:1;width:13px;height:13px;border-radius:50%;background:#39d8df;box-shadow:0 0 0 13px rgba(17,47,72,.43),0 0 0 14px rgba(57,216,223,.5),0 4px 12px rgba(0,0,0,.53)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Temporal Ephemeris",
+    "overview": "Palimpsest uses the visual language of a precise observation chart to make memory feel oriented rather than mystical. Large midnight fields create quiet. Fine rules, dated fragments, and sparse violet relationships show old writing resolving around the present thought. The system is poetic through space and timing. It stays functional through readable source passages, exact labels, direct actions, and disciplined alignment.",
+    "keyCharacteristics": [
+      "Midnight fields with large areas of active emptiness.",
+      "Warm serif statements paired with measured monospaced information.",
+      "Violet marks active relationships; cyan identifies recovered source material.",
+      "Rules and coordinates organize content without enclosing it in cards.",
+      "Motion resolves information gently; it never funnels or pulls the eye."
+    ],
+    "rules": [
+      { "name": "The Signal Pair Rule", "body": "Violet means the active present or action; cyan means material recovered from the archive. Do not swap their roles.", "section": "colors" },
+      { "name": "The Dark Field Rule", "body": "Dark blue owns the page. Accent colors describe state and relationship rather than filling decorative regions.", "section": "colors" },
+      { "name": "The Two Registers Rule", "body": "Serif carries meaning and reflection. Monospace carries operation, provenance, and action in English. Chinese uses Songti for reflection and system sans-serif for operation; numeric measurements can remain monospaced.", "section": "typography" },
+      { "name": "The Continuous Field Rule", "body": "Prefer alignment, rules, and whitespace over container chrome. A border exists to measure or separate, not to manufacture a card.", "section": "layout" },
+      { "name": "The Flat-By-Default Rule", "body": "Rules and tonal layers establish structure. Shadows are reserved for an actionable control or one focal interface object.", "section": "elevation" },
+      { "name": "The Earned Circle Rule", "body": "A circle must represent a point, orbit, coordinate, or status. It is not a generic container shape.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do use large quiet fields around recovered passages.",
+      "Do make the relationship between current writing and old material visible.",
+      "Do preserve readable dates, source titles, and original passage text.",
+      "Do simplify chart furniture on small screens before shrinking meaningful text.",
+      "Do localize Chinese copy for natural phrasing instead of preserving English line breaks mechanically.",
+      "Do use one orchestrated resolve motion with an exponential ease-out."
+    ],
+    "donts": [
+      "Don't use tightening spirals, a glowing capture axis, or motion that pulls the eye into a funnel.",
+      "Don't use saturated corporate-blue blocks, white editorial grids, or hard red annotation lines.",
+      "Don't turn the chart into fantasy space art, star wallpaper, or mystical decoration.",
+      "Don't replace continuous fields with generic rounded cards or icon tiles.",
+      "Don't invent testimonials, adoption figures, or performance claims as visual proof."
+    ]
+  }
+}
