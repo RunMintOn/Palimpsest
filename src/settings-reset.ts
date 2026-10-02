@@ -17,7 +17,7 @@ const sectionKeys: Record<SettingsResetSection, readonly (keyof SideGrepSettings
   query: ["queryDebounceMs"],
   chunking: ["chunkTargetLength", "chunkMaxLength", "chunkMinLength"],
   retrieval: ["topK", "maxPerFile"],
-  expansion: ["autoExpandCount", "autoExpandThresholdEnabled", "autoExpandThreshold"],
+  expansion: ["autoExpandCount"],
   appearance: ["resultExcerptFontScale", "resultExcerptLineHeight", "resultExcerptMaxLines"],
   indexBuild: ["embeddingBatchSize"],
   queryInstruction: ["queryInstruction"]

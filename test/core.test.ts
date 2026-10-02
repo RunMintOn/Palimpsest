@@ -77,8 +77,6 @@ const defaultSettings: SideGrepSettings = {
   queryInstruction: "instruction",
   embeddingBatchSize: 16,
   autoExpandCount: 3,
-  autoExpandThresholdEnabled: false,
-  autoExpandThreshold: 0.3,
   resultExcerptFontScale: 0.92,
   resultExcerptLineHeight: 1.48,
   resultExcerptMaxLines: 10
@@ -579,7 +577,7 @@ test("every editable setting maps to the reset control for its own section", () 
   assert.equal(resetSectionForSetting("queryDebounceMs"), "query");
   assert.equal(resetSectionForSetting("chunkMaxLength"), "chunking");
   assert.equal(resetSectionForSetting("topK"), "retrieval");
-  assert.equal(resetSectionForSetting("autoExpandThreshold"), "expansion");
+  assert.equal(resetSectionForSetting("autoExpandCount"), "expansion");
   assert.equal(resetSectionForSetting("embeddingBatchSize"), "indexBuild");
   assert.equal(resetSectionForSetting("queryInstruction"), "queryInstruction");
   assert.equal(resetSectionForSetting("excludedDirectories"), "scope");
@@ -1133,20 +1131,20 @@ test("normal typing remains debounced, while file/sidebar/index lifecycle events
 
 test("result presentation refreshes for rank/content changes but not score-only updates", () => {
   const previous = [
-    { ...indexed("a", "a.md", "A", [1, 0, 0]), similarity: 0.61 },
-    { ...indexed("b", "b.md", "B", [1, 0, 0]), similarity: 0.60 }
+    { ...indexed("a", "a.md", "A", [1, 0, 0]), rankScore: 0.032 },
+    { ...indexed("b", "b.md", "B", [1, 0, 0]), rankScore: 0.031 }
   ];
-  assert.equal(hasMaterialResultChange(previous, previous.map((result) => ({ ...result, similarity: result.similarity + 0.01 }))), false);
+  assert.equal(hasMaterialResultChange(previous, previous.map((result) => ({ ...result, rankScore: result.rankScore + 0.001 }))), false);
   assert.equal(hasMaterialResultChange(previous, [previous[1], previous[0]]), true);
   assert.equal(hasMaterialResultChange(previous, [{ ...previous[0], text: "changed" }, previous[1]]), true);
 });
 
-test("auto expansion combines rank count, all mode, and an optional similarity threshold", () => {
-  assert.equal(shouldAutoExpand(0, 0.2, { count: 3, thresholdEnabled: false, threshold: 0.5 }), true);
-  assert.equal(shouldAutoExpand(3, 0.9, { count: 3, thresholdEnabled: false, threshold: 0.5 }), false);
-  assert.equal(shouldAutoExpand(8, 0.8, { count: -1, thresholdEnabled: true, threshold: 0.5 }), true);
-  assert.equal(shouldAutoExpand(1, 0.4, { count: 3, thresholdEnabled: true, threshold: 0.5 }), false);
-  assert.equal(shouldAutoExpand(0, 0.9, { count: 0, thresholdEnabled: false, threshold: 0 }), false);
+test("auto expansion uses only rank count and preserves all/collapsed modes", () => {
+  assert.equal(shouldAutoExpand(0, { count: 3 }), true);
+  assert.equal(shouldAutoExpand(3, { count: 3 }), false);
+  assert.equal(shouldAutoExpand(8, { count: -1 }), true);
+  assert.equal(shouldAutoExpand(1, { count: 3 }), true);
+  assert.equal(shouldAutoExpand(0, { count: 0 }), false);
 });
 
 test("Ollama HTTP 200 with empty embeddings is rejected", async () => {

@@ -7,7 +7,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
-    "build": "node esbuild.config.mjs && node scripts/verify-bundle.mjs"
+    "build": "node esbuild.config.mjs && node scripts/verify-bundle.mjs",
+    "build:native": "npm run build && node scripts/prepare-native-runtime.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -16,5 +17,8 @@
     "obsidian": "~1.12.3",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@zvec/zvec": "0.7.1"
   }
 }

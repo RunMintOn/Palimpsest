@@ -33,9 +33,9 @@ Palimpsest 是 Obsidian 中的环境式记忆召回工具。普通搜索要求�
 ## Capabilities and Constraints
 
 - 当前是 Obsidian 桌面端 beta，最低支持 Obsidian 1.12.0。
-- 当前通过 BRAT 或 GitHub Release 安装，尚未进入 Obsidian 官方社区插件目录。
+- 已发布 beta 通过 BRAT 或 GitHub Release 安装；当前源码混合检索版另需 native 运行资源，仅完成 macOS ARM64 本机安装验收，尚未发布。
 - 默认使用光标所在段落进行语义查询；支持有效选区，以及全选后显式查询全文。空行、标题或过短段落不回退到全文。
-- 以相关原文片段为结果，而非只显示文件名。
+- 当前源码版使用本地关键词和向量两路召回，以 RRF 融合排序；结果为相关原文片段，而非只显示文件名。
 - 支持 Markdown 渲染、打开来源、拖动插入链接和引用。
 - 索引和检索全部在本地完成，不调用云端 API。
 - 默认依赖本地 Ollama 服务和 `qwen3-embedding:0.6b` 模型。

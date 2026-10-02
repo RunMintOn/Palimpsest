@@ -100,6 +100,7 @@ export interface SidebarState {
   indexAction?: "build" | "rebuild" | "retry";
 }
 
-export interface SearchResult extends IndexedChunk {
-  similarity: number;
+export interface SearchResult extends Chunk {
+  /** A ranking value, never a probability or cosine similarity. */
+  rankScore: number;
 }

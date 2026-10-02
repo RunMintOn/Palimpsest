@@ -6,7 +6,8 @@ await esbuild.build({
   outfile: "main.js",
   // Obsidian owns the CodeMirror runtime. Bundling a second copy causes its
   // extension values to fail Obsidian's instanceof checks when a note opens.
-  external: ["obsidian", "@codemirror/*", "@lezer/*"],
+  external: ["obsidian", "@codemirror/*", "@lezer/*", "@zvec/zvec"],
+  platform: "node",
   format: "cjs",
   target: "es2022",
   sourcemap: "inline",

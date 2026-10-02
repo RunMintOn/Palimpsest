@@ -33,12 +33,17 @@ Palimpsest works in three stages:
    each passage, and stores the vectors in a local index.
 2. **Search while you write**: After you stop typing for about 800 ms, the
    plugin uses the complete paragraph at the cursor as an embedding query and searches
-   for the semantically closest older passages.
-3. **Show the results**: Matching passages are sorted by similarity and shown
+   for related older passages alongside a local keyword query.
+3. **Show the results**: Keyword and vector candidates are fused by rank and shown
    in the right sidebar. Click a result to open the source note, or drag it to
    insert a link or quotation.
 
 Everything runs locally and does not pass through a cloud service.
+
+The current source uses Zvec/Jieba keyword retrieval and RRF fusion alongside
+Ollama vectors. Its independently tested native installation currently targets
+macOS ARM64; see [native build and installation](NATIVE.md). This snapshot has
+not been published as a new three-file Release or BRAT update.
 
 The initial indexing time depends on the size of your vault. A larger vault
 may take several minutes to index. This is a one-time cost: new and changed
@@ -165,8 +170,8 @@ synchronization, and recovery procedures.
 - **Drag to insert links or quotations**: Drag a title to insert an Obsidian
   link, or drag the quotation icon to insert a quote block.
 - **Expansion policy**: The first three results are expanded by default.
-  You can configure the number of expanded results and the similarity
-  threshold; manual actions take priority.
+  You can configure the number of expanded results; manual actions take priority.
+  Legacy cosine thresholds are ignored.
 - **Local operation**: Everything runs locally; no cloud API is called.
 - **Local IndexedDB index**: Settings changes do not rewrite vectors. The
   existing index remains usable until a full rebuild completes.
@@ -185,7 +190,6 @@ synchronization, and recovery procedures.
 | Vector dimensions | 1024 | Changing this requires a rebuild |
 | Query debounce | 800 ms | Delay after typing stops |
 | Default expanded results | First 3 | Options include all collapsed, first 1/3/5, or all expanded |
-| Minimum similarity for auto-expansion | Off | When enabled, results below the threshold are not expanded automatically |
 | Target passage length | 650 characters | |
 | Excluded directories | `.obsidian` | Comma-separated |
 
@@ -195,8 +199,9 @@ synchronization, and recovery procedures.
 
 - **Editor**: TypeScript + Obsidian API
 - **Embedding model**: Qwen3-Embedding-0.6B (GGUF Q8_0, 1024 dimensions)
-- **Retrieval backend**: Local Ollama service
-- **Index**: Markdown heading and paragraph splitting + cosine similarity
+- **Embedding service**: Local Ollama
+- **Index**: Markdown passages and vectors in IndexedDB; disposable Zvec/Jieba keyword cache
+- **Retrieval**: Cosine-ranked vector candidates + keyword candidates + RRF fusion
 
 ### Resource usage (Qwen3-Embedding-0.6B)
 

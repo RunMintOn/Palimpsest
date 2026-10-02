@@ -24,24 +24,46 @@ export interface RankOptions {
   duplicateSimilarity?: number;
 }
 
-export function rankChunks(query: NumericVector, candidates: readonly IndexedChunk[], options: RankOptions): SearchResult[] {
-  const scored = candidates
-    .filter((chunk) => chunk.filePath !== options.excludePath)
-    .map((chunk) => ({ ...chunk, similarity: cosineSimilarity(query, chunk.vector) }))
-    .sort((a, b) => b.similarity - a.similarity);
-  const results: SearchResult[] = [];
+export interface VectorRankedChunk extends IndexedChunk { similarity: number }
+
+export function vectorRanking(query: NumericVector, candidates: readonly IndexedChunk[], excludePath?: string): VectorRankedChunk[] {
+  return candidates.filter(chunk => chunk.filePath !== excludePath)
+    .map(chunk => ({ ...chunk, similarity: cosineSimilarity(query, chunk.vector) }))
+    .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id));
+}
+
+function selectChunks<T extends IndexedChunk>(ordered: readonly T[], options: RankOptions): T[] {
+  const selected: T[] = [];
   const perFile = new Map<string, number>();
-  const duplicateAt = options.duplicateSimilarity ?? 0.995;
-  for (const candidate of scored) {
-    if ((perFile.get(candidate.filePath) ?? 0) >= options.maxPerFile) continue;
-    const normalized = candidate.text.replace(/\s+/g, " ").trim();
-    const duplicate = results.some((result) =>
-      result.text.replace(/\s+/g, " ").trim() === normalized ||
-      (result.filePath === candidate.filePath && cosineSimilarity(result.vector, candidate.vector) >= duplicateAt));
-    if (duplicate) continue;
-    results.push(candidate);
-    perFile.set(candidate.filePath, (perFile.get(candidate.filePath) ?? 0) + 1);
-    if (results.length >= options.topK) break;
+  for (const chunk of ordered) {
+    if (chunk.filePath === options.excludePath || (perFile.get(chunk.filePath) ?? 0) >= options.maxPerFile) continue;
+    const normalized = chunk.text.replace(/\s+/g, " ").trim();
+    if (selected.some(result => result.text.replace(/\s+/g, " ").trim() === normalized ||
+      (result.filePath === chunk.filePath && cosineSimilarity(result.vector, chunk.vector) >= (options.duplicateSimilarity ?? 0.995)))) continue;
+    selected.push(chunk);
+    perFile.set(chunk.filePath, (perFile.get(chunk.filePath) ?? 0) + 1);
+    if (selected.length >= options.topK) break;
   }
-  return results;
+  return selected;
+}
+
+export function fuseRankings(chunks: readonly IndexedChunk[], routes: readonly (readonly string[])[], options: RankOptions): SearchResult[] {
+  const scores = new Map<string, number>();
+  for (const route of routes) {
+    const seen = new Set<string>();
+    let rank = 0;
+    for (const id of route) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rank++;
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (60 + rank));
+    }
+  }
+  const ordered = chunks.filter(chunk => scores.has(chunk.id))
+    .sort((a, b) => scores.get(b.id)! - scores.get(a.id)! || a.id.localeCompare(b.id));
+  return selectChunks(ordered, options).map(({ vector: _vector, ...chunk }) => ({ ...chunk, rankScore: scores.get(chunk.id)! }));
+}
+
+export function rankChunks(query: NumericVector, candidates: readonly IndexedChunk[], options: RankOptions): VectorRankedChunk[] {
+  return selectChunks(vectorRanking(query, candidates, options.excludePath), options);
 }

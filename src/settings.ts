@@ -19,8 +19,6 @@ export interface SideGrepSettings {
   queryInstruction: string;
   embeddingBatchSize: number;
   autoExpandCount: number;
-  autoExpandThresholdEnabled: boolean;
-  autoExpandThreshold: number;
   resultExcerptFontScale: number;
   resultExcerptLineHeight: number;
   resultExcerptMaxLines: number;
@@ -41,8 +39,6 @@ export const DEFAULT_SETTINGS: SideGrepSettings = {
   queryInstruction: "Given a Chinese note search query, retrieve relevant passages from a local Markdown knowledge base.",
   embeddingBatchSize: 16,
   autoExpandCount: 3,
-  autoExpandThresholdEnabled: false,
-  autoExpandThreshold: 0.3,
   resultExcerptFontScale: 0.92,
   resultExcerptLineHeight: 1.48,
   resultExcerptMaxLines: 10
@@ -51,6 +47,9 @@ export const DEFAULT_SETTINGS: SideGrepSettings = {
 /** Stored settings may still contain the pre-schema string form. */
 export interface StoredSideGrepSettings extends Omit<Partial<SideGrepSettings>, "excludedDirectories"> {
   excludedDirectories?: string | string[];
+  /** Legacy cosine thresholds are ignored, not reinterpreted as fusion scores. */
+  autoExpandThresholdEnabled?: boolean;
+  autoExpandThreshold?: number;
 }
 
 export function migrateSettings(settings: StoredSideGrepSettings = {}): SideGrepSettings {
@@ -69,8 +68,6 @@ export function migrateSettings(settings: StoredSideGrepSettings = {}): SideGrep
     queryInstruction: settings.queryInstruction ?? DEFAULT_SETTINGS.queryInstruction,
     embeddingBatchSize: settings.embeddingBatchSize ?? DEFAULT_SETTINGS.embeddingBatchSize,
     autoExpandCount: settings.autoExpandCount ?? DEFAULT_SETTINGS.autoExpandCount,
-    autoExpandThresholdEnabled: settings.autoExpandThresholdEnabled ?? DEFAULT_SETTINGS.autoExpandThresholdEnabled,
-    autoExpandThreshold: settings.autoExpandThreshold ?? DEFAULT_SETTINGS.autoExpandThreshold,
     resultExcerptFontScale: settings.resultExcerptFontScale ?? DEFAULT_SETTINGS.resultExcerptFontScale,
     resultExcerptLineHeight: settings.resultExcerptLineHeight ?? DEFAULT_SETTINGS.resultExcerptLineHeight,
     resultExcerptMaxLines: settings.resultExcerptMaxLines ?? DEFAULT_SETTINGS.resultExcerptMaxLines
@@ -468,22 +465,6 @@ export class SideGrepSettingTab extends PluginSettingTab {
         .setValue(String(this.plugin.settings.autoExpandCount))
         .onChange(async (value) => this.persistSetting("autoExpandCount", Number(value))));
 
-    new Setting(this.containerEl)
-      .setName("使用自动展开相似度阈值")
-      .setDesc("开启后，低于阈值的结果不会自动展开")
-      .addToggle((toggle) => toggle
-        .setValue(this.plugin.settings.autoExpandThresholdEnabled)
-        .onChange(async (value) => this.persistSetting("autoExpandThresholdEnabled", value)));
-
-    new Setting(this.containerEl)
-      .setName("自动展开最低相似度")
-      .setDesc("范围 0–1；仅在启用阈值时生效")
-      .addText((text) => text
-        .setValue(String(this.plugin.settings.autoExpandThreshold))
-        .onChange(async (value) => {
-          const number = Number(value);
-          if (Number.isFinite(number) && number >= 0 && number <= 1) await this.persistSetting("autoExpandThreshold", number);
-        }));
   }
 
   private text(label: string, description: string, key: keyof SideGrepSettings): void {

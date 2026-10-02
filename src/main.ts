@@ -1,4 +1,5 @@
-import { Editor, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf, requestUrl } from "obsidian";
+import { join } from "node:path";
+import { Editor, FileSystemAdapter, MarkdownView, Notice, Plugin, TAbstractFile, TFile, TFolder, WorkspaceLeaf, requestUrl } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import { embeddingText } from "./chunker";
 import { BuildCancellationController, BuildCancellationToken, IndexBuildCancelled } from "./build-cancellation";
@@ -24,9 +25,9 @@ import { planIndexScopeTransition } from "./index-scope-transition";
 import { AutomaticWorkActions, AutomaticWorkCoordinator } from "./automatic-work";
 import { QueryGate } from "./query-gate";
 import { QueryLifecycleCoordinator, QuerySchedule } from "./query-lifecycle";
-import { queryRequestIsCurrent, queryResponseDisposition, type QueryRequestState } from "./query-response-disposition";
+import { queryBufferIsCurrent, queryRequestIsCurrent, queryResponseDisposition, type QueryRequestState } from "./query-response-disposition";
 import { currentQuerySelection, isValidQueryText, paragraphQuerySource, sameQueryParagraph, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
-import { rankChunks } from "./retrieval";
+import { HybridRetrieval, KeywordIndexUnavailable } from "./hybrid-retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
@@ -45,6 +46,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   settings: SideGrepSettings = migrateSettings();
   private index!: PersistentIndex;
   private indexStore: IndexStore | undefined;
+  private retrieval: HybridRetrieval | undefined;
   private queryTimer: number | undefined;
   private modelTimer: number | undefined;
   private updateTimer: number | undefined;
@@ -88,6 +90,10 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     let persistedIndex: PersistentIndexData | undefined;
     try {
       const identity = await ensureVaultIdentity({ configDir: this.app.vault.configDir, adapter: this.app.vault.adapter });
+      if (this.app.vault.adapter instanceof FileSystemAdapter) {
+        const runtime = join(this.app.vault.adapter.getBasePath(), this.manifest.dir ?? join(this.app.vault.configDir, "plugins", this.manifest.id), "runtime/node_modules/@zvec/zvec");
+        this.retrieval = new HybridRetrieval(identity.vaultId, () => require(runtime));
+      }
       this.indexStore = createIndexStore(identity.vaultId);
       const loaded = await this.indexStore.load();
       if (loaded.status === "ready") {
@@ -138,6 +144,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   onunload(): void {
     this.buildCancellation.unload();
     this.indexStore?.close();
+    this.retrieval?.close();
     this.clearQueryTimers();
     if (this.updateTimer !== undefined) window.clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
@@ -288,7 +295,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
           // The durable transaction succeeded, but unload must never update
           // the in-memory index or settings UI after it has begun.
           this.buildCancellation.assertPluginActive();
-          this.index.commit(durable);
+          this.adoptCommittedIndex(durable);
           this.buildCancellation.assertPluginActive();
         }
       });
@@ -342,6 +349,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     await this.requireIndexStore().clear();
     this.buildCancellation.assertPluginActive();
     this.index = new PersistentIndex(this.indexIdentity(), undefined, this.desiredIndexScope());
+    this.retrieval?.invalidate();
     this.pendingVaultChanges.clear();
     this.deferredLargeIndexUpdate.clear();
     this.fallbackGenerationInUse = false;
@@ -383,7 +391,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private onEditorChange(editor: Editor, view: MarkdownView | import("obsidian").MarkdownFileInfo): void {
-    if (!(view instanceof MarkdownView)) return;
+    if (!(view instanceof MarkdownView) || view.getMode() !== "source") return;
     this.latestMarkdownView = view;
     this.lifecycle.rememberMarkdownContext();
     // Follow-selection mode deliberately ignores ordinary document edits.
@@ -459,7 +467,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   }
 
   private selectedQueryText(view: MarkdownView): string {
-    return currentQuerySelection(view.editor.getSelection(), this.renderedSelection(view));
+    return currentQuerySelection(view.editor.getSelection(), this.renderedSelection(view), view.getMode() === "preview");
   }
 
   private onFileOpen(file: TFile | null): void {
@@ -539,6 +547,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     }
     this.present({ kind: "querying", message: "查询中…" }, this.results);
     const started = performance.now();
+    const chunks = this.index.chunks;
+    const requestCurrent = () => chunks === this.index.chunks && this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer);
     const modelTimer = window.setTimeout(() => {
       if (this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) this.present({ kind: "loading-model", message: "模型加载中/查询中…" }, this.results);
     }, 600);
@@ -552,11 +562,14 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         return;
       }
       if (responseDisposition !== "apply") return;
-      const results = rankChunks(response.vectors[0], this.index.chunks, {
+      if (!this.retrieval) throw new KeywordIndexUnavailable("当前环境无法加载关键词检索，请检查本机安装");
+      this.present({ kind: "querying", message: "混合检索中（同步已提交片段）…" }, this.results);
+      const results = await this.retrieval.search(source.text, response.vectors[0], chunks, {
         topK: this.settings.topK,
         maxPerFile: this.settings.maxPerFile,
         excludePath: filePath
-      });
+      }, requestCurrent);
+      if (!requestCurrent()) return;
       const latencyMs = performance.now() - started;
       const message = this.index.size
         ? `完成（索引 ${this.index.size} 个片段${response.coldLoad ? "，模型本次冷加载" : ""}）`
@@ -564,7 +577,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       this.present({ kind: "complete", message, latencyMs }, results);
     } catch (error) {
       window.clearTimeout(modelTimer);
-      if (!this.isQueryRequestCurrent(generation, source, editor, view, filePath, scheduledBuffer)) return;
+      if (!requestCurrent()) return;
       const message = error instanceof EmbeddingError && error.kind === "connection" ? "Ollama 不可用" : `查询失败：${error instanceof Error ? error.message : String(error)}`;
       this.present({ kind: error instanceof EmbeddingError && error.kind === "connection" ? "ollama-unavailable" : "query-failed", message }, this.results);
     }
@@ -574,7 +587,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     return {
       automaticWorkAllowed: this.automaticWork.allowed,
       generationCurrent: this.queryGate.isCurrent(generation),
-      bufferCurrent: editor.getValue() === scheduledBuffer,
+      bufferCurrent: queryBufferIsCurrent(source.kind, view.getMode() === "preview", scheduledBuffer, editor.getValue()),
       markdownViewCurrent: this.latestMarkdownView === view,
       pathCurrent: view.file?.path === filePath,
       selectionCurrent: source.kind !== "selection-follow" || this.selectedQueryText(view) === source.text,
@@ -691,11 +704,12 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
       pendingChanges: this.pendingVaultChanges.size,
       fallbackGenerationInUse: this.fallbackGenerationInUse,
       deferredLargeIndexUpdate: this.deferredLargeIndexUpdate.isDeferred,
-      ...options
+      ...options,
+      refreshRequested: options.patchSucceeded || options.refreshRequested
     });
     // A visibility resume that was blocked by this update owns its subsequent
-    // reconciliation/flush/query sequence. Ordinary updates retain the
-    // existing refreshRequested behavior.
+    // reconciliation/flush/query sequence. Every committed snapshot refreshes
+    // results, including metadata-only changes to source positions.
     const completion = this.automaticWork.indexUpdateCompleted(this.automaticActions());
     if (actions.refreshQuery && this.automaticWork.allowed && !completion.recoveryOwnsQuery) this.refreshCurrentQuery();
     if (actions.schedulePending) this.schedulePendingFileUpdates();
@@ -965,7 +979,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     // A successful durable write survives unload, but an unloading plugin
     // must not mutate memory or the UI after it completes.
     this.buildCancellation.assertPluginActive();
-    this.index.commit(durable);
+    this.adoptCommittedIndex(durable);
     this.buildCancellation.assertPluginActive();
   }
 
@@ -1129,8 +1143,14 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
           })
     });
     this.buildCancellation.assertPluginActive();
-    this.index.commit(durable);
+    this.adoptCommittedIndex(durable);
     this.buildCancellation.assertPluginActive();
+  }
+
+  private adoptCommittedIndex(data: PersistentIndexData): void {
+    this.index.commit(data);
+    this.retrieval?.invalidate();
+    this.queryGate.invalidate();
   }
 
   private requireIndexStore(): IndexStore {
@@ -1290,12 +1310,8 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     return `${quoted}\n>\n> —— ${this.linkMarkup(result)}`;
   }
 
-  expansionPolicy(): { count: number; thresholdEnabled: boolean; threshold: number } {
-    return {
-      count: this.settings.autoExpandCount,
-      thresholdEnabled: this.settings.autoExpandThresholdEnabled,
-      threshold: this.settings.autoExpandThreshold
-    };
+  expansionPolicy(): { count: number } {
+    return { count: this.settings.autoExpandCount };
   }
 
   resultExcerptPresentation(): ResultExcerptPresentation {

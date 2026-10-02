@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { QuerySourceCoordinator, sameQueryParagraph } from "../src/query-source";
-import { queryResponseDisposition, type QueryRequestState } from "../src/query-response-disposition";
+import { currentQuerySelection, QuerySourceCoordinator, sameQueryParagraph } from "../src/query-source";
+import { queryBufferIsCurrent, queryResponseDisposition, type QueryRequestState } from "../src/query-response-disposition";
 
 test("default query uses the complete current paragraph rather than the document", () => {
   const source = new QuerySourceCoordinator();
@@ -82,6 +82,19 @@ test("the old paragraph response cannot publish after the second paragraph finis
   finishFirst();
   await oldResponse;
   assert.deepEqual(results, ["第二段先完成的有效查询文本。"]);
+});
+
+test("reading view never borrows the hidden editor selection", () => {
+  assert.equal(currentQuerySelection("不可见的旧编辑器选区", undefined, true), "");
+  assert.equal(currentQuerySelection("不可见的旧编辑器选区", "", true), "");
+  assert.equal(currentQuerySelection("不可见的旧编辑器选区", "实际阅读视图选区", true), "实际阅读视图选区");
+});
+
+test("reading-view selections do not depend on the hidden editor buffer finishing loading", () => {
+  assert.equal(queryBufferIsCurrent("selection-once", true, "旧编辑器内容", ""), true);
+  assert.equal(queryBufferIsCurrent("selection-follow", true, "旧编辑器内容", "新编辑器内容"), true);
+  assert.equal(queryBufferIsCurrent("selection-once", false, "旧编辑器内容", "新编辑器内容"), false);
+  assert.equal(queryBufferIsCurrent("paragraph", true, "旧编辑器内容", ""), false);
 });
 
 test("CRLF paragraphs preserve their content and headings delimit adjacent prose", () => {

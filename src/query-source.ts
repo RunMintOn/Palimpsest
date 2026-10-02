@@ -41,7 +41,8 @@ export function isValidQueryText(text: string): boolean {
 }
 
 /** Chooses the selected text exposed by the currently active Markdown surface. */
-export function currentQuerySelection(editorSelection: string, renderedSelection?: string): string {
+export function currentQuerySelection(editorSelection: string, renderedSelection?: string, readingView = false): string {
+  if (readingView) return renderedSelection ?? "";
   return renderedSelection?.length ? renderedSelection : editorSelection;
 }
 

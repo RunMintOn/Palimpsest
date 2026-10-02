@@ -27,7 +27,6 @@ export interface SidebarActions {
 interface ResultCard {
   root: HTMLDetailsElement;
   file: HTMLElement;
-  score: HTMLElement;
   breadcrumb: HTMLElement;
   quote: HTMLElement;
   excerptToggle: HTMLButtonElement;
@@ -262,7 +261,6 @@ export class SideGrepView extends ItemView {
     const root = document.createElement("details");
     root.className = "obsdn-side-grep-result";
     const summary = root.createEl("summary");
-    const score = summary.createSpan({ cls: "obsdn-side-grep-score", attr: { title: "余弦相似度，不是准确率" } });
     const file = summary.createEl("a", {
       cls: "obsdn-side-grep-file",
       attr: { href: "#", "aria-label": "打开来源；拖动可插入链接", title: "打开来源；拖动可插入链接", draggable: "true" }
@@ -284,7 +282,6 @@ export class SideGrepView extends ItemView {
     const card: ResultCard = {
       root,
       file,
-      score,
       breadcrumb,
       quote,
       excerptToggle,
@@ -327,8 +324,6 @@ export class SideGrepView extends ItemView {
   private updateResultCard(card: ResultCard, result: SearchResult, index: number): void {
     card.result = result;
     if (card.file.textContent !== result.fileName) card.file.setText(result.fileName);
-    const score = result.similarity.toFixed(2);
-    if (card.score.textContent !== score) card.score.setText(score);
     const breadcrumb = result.breadcrumb.join(" › ");
     if (card.breadcrumb.textContent !== breadcrumb) card.breadcrumb.setText(breadcrumb);
     card.breadcrumb.setAttribute("title", breadcrumb);
@@ -343,7 +338,7 @@ export class SideGrepView extends ItemView {
 
     this.applyExcerptPresentation(card);
 
-    const autoOpen = shouldAutoExpand(index, result.similarity, this.actions.expansionPolicy());
+    const autoOpen = shouldAutoExpand(index, this.actions.expansionPolicy());
     const desiredOpen = card.manualExpansion ?? autoOpen;
     if (card.root.open !== desiredOpen) {
       card.ignoreNextToggle = true;

@@ -1,3 +1,10 @@
+import type { QuerySourceKind } from "./query-source";
+
+/** Reading-view selections are not backed by the hidden editor's loading buffer. */
+export function queryBufferIsCurrent(kind: QuerySourceKind, readingView: boolean, scheduledBuffer: string, currentBuffer: string): boolean {
+  return (readingView && kind !== "paragraph") || scheduledBuffer === currentBuffer;
+}
+
 export interface QueryRequestState {
   automaticWorkAllowed: boolean;
   generationCurrent: boolean;
