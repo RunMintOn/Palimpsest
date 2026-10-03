@@ -1,6 +1,6 @@
 import { IndexScope } from "./index-scope";
 
-export const CHUNKER_VERSION = "2";
+export const CHUNKER_VERSION = "3";
 
 export interface Chunk {
   id: string;

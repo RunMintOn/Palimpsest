@@ -818,7 +818,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         documents,
         skippedDocuments,
         reusableById: this.index.reusableById(identity),
-        reusableChunks: this.index.chunks,
+        reusableChunks: this.index.reusableChunks(identity),
         vaultRevision,
         scope,
         identity,
@@ -895,8 +895,9 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
     if (error instanceof IndexBuildCancelled) {
       this.present({
         kind: "index-cancelled",
-        message: hadUsableIndex ? "已取消重建，正在继续使用原有索引" : "已取消。尚未建立知识库索引",
-        indexAction: hadUsableIndex ? "rebuild" : "build"
+        message: hadUsableIndex ? "已取消重建，正在继续使用原有索引" : this.index.lifecycle(this.indexIdentity()) === "incompatible"
+          ? "已取消。原索引已保留，但版本或配置不兼容，仍需重建索引" : "已取消。尚未建立知识库索引",
+        indexAction: this.index.lifecycle(this.indexIdentity()) === "uninitialized" ? "build" : "rebuild"
       }, hadUsableIndex ? this.results : []);
       return;
     }

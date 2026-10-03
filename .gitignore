@@ -18,6 +18,8 @@ tools/find-papercuts.ps1
 issues/
 !/.scratch/zg-backend/issues/
 !/.scratch/zg-backend/issues/*.md
+!/.scratch/markdown-structure/issues/
+!/.scratch/markdown-structure/issues/*.md
 
 # Machine-specific results and superseded investigation material stay local.
 /.scratch/zg-backend/probes/

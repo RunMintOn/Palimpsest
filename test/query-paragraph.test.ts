@@ -1,7 +1,49 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { currentQuerySelection, QuerySourceCoordinator, sameQueryParagraph } from "../src/query-source";
+import { currentQuerySelection, paragraphQuerySource, QuerySourceCoordinator, sameQueryParagraph } from "../src/query-source";
+import { chunkMarkdown } from "../src/chunker";
 import { queryBufferIsCurrent, queryResponseDisposition, type QueryRequestState } from "../src/query-response-disposition";
+
+test("fenced code queries keep heading-like content but never cross fence boundaries", () => {
+  const body = "# 真正章节\n\n普通正文有足够的查询内容\n~~~python\n# CODEANCHOR 这是代码注释\nprint(123)\n~~~\n后续正文有足够的查询内容";
+  assert.deepEqual(paragraphQuerySource(body, 4), { kind: "paragraph", text: "# CODEANCHOR 这是代码注释\nprint(123)", startLine: 4 });
+  for (const line of [0, 1, 3, 6]) assert.equal(paragraphQuerySource(body, line).text, "");
+  assert.equal(paragraphQuerySource(body, 2).text, "普通正文有足够的查询内容");
+  assert.equal(paragraphQuerySource(body, 7).text, "后续正文有足够的查询内容");
+  const chunks = chunkMarkdown("fixture.md", body, { targetLength: 650, maxLength: 1100, minLength: 1 });
+  assert.ok(chunks.every(c => c.breadcrumb.join() === "真正章节"));
+  assert.ok(chunks.some(c => c.text.includes("# CODEANCHOR 这是代码注释")));
+});
+
+test("default queries exclude closed frontmatter and both Setext lines while explicit selections remain verbatim", () => {
+  const source = new QuerySourceCoordinator();
+  const body = "---\nsecret: PRIVATEANCHOR\n...\n\n章节标题\n===\n\n这里是有足够长度的正文内容";
+  for (const line of [0, 1, 2, 3, 4, 5, 6]) assert.equal(paragraphQuerySource(body, line).text, "");
+  assert.equal(paragraphQuerySource(body, 7).text, "这里是有足够长度的正文内容");
+  const selected = "secret: PRIVATEANCHOR";
+  assert.deepEqual(source.selectionButton(selected), { kind: "one-shot", source: { kind: "selection-once", text: selected } });
+  const chunks = chunkMarkdown("fixture.md", body, { targetLength: 650, maxLength: 1100, minLength: 1 });
+  assert.deepEqual(chunks.map(c => c.breadcrumb), [["章节标题"]]);
+  assert.doesNotMatch(chunks[0].text, /PRIVATEANCHOR/);
+});
+
+for (const [opening, closing] of [["````python", "`````"], ["   ~~~~ info", "  ~~~~~"], ["~~~", ""]]) {
+  test(`code paragraph boundaries survive fake closing markers and CRLF: ${opening}`, () => {
+    const body = ["外面的正文不能参与代码查询", opening, "# 第一段代码包含足够查询文本", "```", "~~~ trailing", "第二行正文", "", "## 第二段代码包含足够查询文本", closing].join("\r\n");
+    assert.equal(paragraphQuerySource(body, 2).text, "# 第一段代码包含足够查询文本\n```\n~~~ trailing\n第二行正文");
+    assert.equal(paragraphQuerySource(body, 7).text, "## 第二段代码包含足够查询文本");
+    assert.equal(paragraphQuerySource(body, 1).text, "");
+    const first = paragraphQuerySource(body, 2);
+    assert.equal(sameQueryParagraph(first, paragraphQuerySource(body, 5)), true);
+    assert.equal(sameQueryParagraph(first, paragraphQuerySource(body, 7)), false);
+    if (closing) assert.equal(paragraphQuerySource(body, 8).text, "");
+  });
+}
+
+test("isolated underlines and unclosed frontmatter do not suppress ordinary content", () => {
+  assert.equal(paragraphQuerySource("---\n\n孤立标记后的普通正文内容", 0).text, "---");
+  assert.equal(paragraphQuerySource("===\n\n孤立标记后的普通正文内容", 2).text, "孤立标记后的普通正文内容");
+});
 
 test("default query uses the complete current paragraph rather than the document", () => {
   const source = new QuerySourceCoordinator();

@@ -81,6 +81,12 @@ export class PersistentIndex {
     return this.lifecycle(identity) === "ready";
   }
 
+  /** Chunking changes may reuse exact inputs; a different embedding space may not. */
+  reusableChunks(identity: IndexIdentity): readonly IndexedChunk[] {
+    return this.data.identity.model === identity.model && this.data.identity.dimensions === identity.dimensions
+      ? this.data.chunks : [];
+  }
+
   reusableById(identity: IndexIdentity): Map<string, IndexedChunk> {
     if (!this.isCompatible(identity)) return new Map();
     return new Map(this.data.chunks.map((chunk) => [chunk.id, chunk]));

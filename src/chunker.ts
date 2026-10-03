@@ -1,4 +1,5 @@
 import { CHUNKER_VERSION, Chunk } from "./types";
+import { markdownStructure } from "./markdown-structure";
 
 export interface ChunkerOptions {
   targetLength: number;
@@ -11,6 +12,7 @@ interface Paragraph {
   startLine: number;
   endLine: number;
   breadcrumb: string[];
+  preserveCode?: boolean;
 }
 
 function sameBreadcrumb(left: readonly string[], right: readonly string[]): boolean {
@@ -41,19 +43,10 @@ export function embeddingText(chunk: Chunk): string {
   return `文件名：${chunk.fileName}\n标题：${heading}\n原文：\n${chunk.text}`;
 }
 
-function withoutFrontmatter(lines: string[]): Array<{ line: string; number: number }> {
-  if (lines[0]?.trim() !== "---") return lines.map((line, i) => ({ line, number: i + 1 }));
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === "---" || lines[i].trim() === "...") {
-      return lines.slice(i + 1).map((line, index) => ({ line, number: i + index + 2 }));
-    }
-  }
-  return lines.map((line, i) => ({ line, number: i + 1 }));
-}
-
 function splitLongParagraph(paragraph: Paragraph, maxLength: number): Paragraph[] {
   if (paragraph.text.length <= maxLength) return [paragraph];
-  const pieces = paragraph.text.match(/[^。！？!?\n]+[。！？!?]?|\S+/g) ?? [paragraph.text];
+  const pattern = paragraph.preserveCode ? /[^。！？!?\n]*[。！？!?\n]|[^。！？!?\n]+$/g : /[^。！？!?\n]+[。！？!?]?|\S+/g;
+  const pieces = paragraph.text.match(pattern) ?? [paragraph.text];
   const result: Paragraph[] = [];
   let text = "";
   for (const rawPiece of pieces) {
@@ -82,37 +75,32 @@ export function chunkMarkdown(filePath: string, markdown: string, options: Chunk
     throw new Error("Invalid chunk length settings");
   }
   const filename = filePath.split("/").pop()?.replace(/\.md$/i, "") ?? filePath;
-  const source = withoutFrontmatter(markdown.replace(/\r\n/g, "\n").split("\n"));
+  const source = markdownStructure(markdown);
   // Keep actual heading depths separate from the breadcrumb display values.
   // Markdown may legally skip a level (for example `##` at document start),
   // and sparse string arrays would later expand into `undefined` breadcrumbs.
   const headings: Array<{ depth: number; text: string }> = [];
   const paragraphs: Paragraph[] = [];
-  let buffer: Array<{ line: string; number: number }> = [];
+  let buffer: Array<{ line: string; number: number; preserve: boolean }> = [];
   const flush = () => {
-    const text = buffer.map((item) => item.line).join("\n").trim();
-    if (text) paragraphs.push({ text, startLine: buffer[0].number, endLine: buffer.at(-1)!.number, breadcrumb: headings.map((heading) => heading.text) });
+    const raw = buffer.map((item) => item.line).join("\n");
+    const preserveCode = buffer.some(item => item.preserve);
+    const text = preserveCode ? raw : raw.trim();
+    if (text.trim()) paragraphs.push({ text, startLine: buffer[0].number, endLine: buffer.at(-1)!.number, breadcrumb: headings.map((heading) => heading.text), preserveCode });
     buffer = [];
   };
 
   for (const item of source) {
-    const match = item.line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (match) {
+    if (item.kind === "frontmatter" || item.kind === "heading-underline") continue;
+    if (item.heading) {
       flush();
-      const marker = match[1];
-      const title = match[2];
-      if (!marker || !title) continue;
-      const depth = marker.length;
-      while (true) {
-        const previous = headings.at(-1);
-        if (!previous || previous.depth < depth) break;
-        headings.pop();
-      }
-      headings.push({ depth, text: title.trim() });
+      const { depth, text } = item.heading;
+      while (headings.length && headings.at(-1)!.depth >= depth) headings.pop();
+      if (text) headings.push({ depth, text });
       continue;
     }
-    if (!item.line.trim()) flush();
-    else buffer.push(item);
+    if (!item.text.trim() && item.kind !== "code") flush();
+    else buffer.push({ line: item.text, number: item.index + 1, preserve: item.kind === "code" || item.kind === "fence" });
   }
   flush();
 

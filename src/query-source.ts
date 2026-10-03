@@ -1,3 +1,5 @@
+import { markdownStructure } from "./markdown-structure";
+
 /** Pure query-range state. Obsidian-specific editor access stays in main.ts. */
 export type QuerySource =
   | { kind: "paragraph"; text: string; startLine: number }
@@ -7,9 +9,8 @@ export type QuerySourceKind = QuerySource["kind"];
 
 /** Cursor lines are zero-based; an absent cursor must never imply the whole document. */
 export function paragraphQuerySource(documentText: string, cursorLine: number | undefined): Extract<QuerySource, { kind: "paragraph" }> {
-  const lines = documentText.split(/\r?\n/);
-  const setextUnderline = (line: number) => line > 0 && line < lines.length && Boolean(lines[line - 1].trim()) && /^ {0,3}(?:=+|-+)\s*$/.test(lines[line]);
-  const boundary = (line: number) => !lines[line].trim() || /^ {0,3}#{1,6}(?:\s|$)/.test(lines[line]) || setextUnderline(line) || setextUnderline(line + 1);
+  const lines = markdownStructure(documentText);
+  const boundary = (line: number) => !lines[line].text.trim() || (lines[line].kind !== "text" && lines[line].kind !== "code");
   if (cursorLine === undefined || !Number.isInteger(cursorLine) || cursorLine < 0 || cursorLine >= lines.length || boundary(cursorLine)) {
     return { kind: "paragraph", text: "", startLine: cursorLine ?? -1 };
   }
@@ -17,7 +18,7 @@ export function paragraphQuerySource(documentText: string, cursorLine: number | 
   let endLine = cursorLine;
   while (startLine > 0 && !boundary(startLine - 1)) startLine--;
   while (endLine + 1 < lines.length && !boundary(endLine + 1)) endLine++;
-  return { kind: "paragraph", text: lines.slice(startLine, endLine + 1).join("\n").trim(), startLine };
+  return { kind: "paragraph", text: lines.slice(startLine, endLine + 1).map(line => line.text).join("\n").trim(), startLine };
 }
 
 export function sameQueryParagraph(left: QuerySource | undefined, right: QuerySource): boolean {
