@@ -20,6 +20,8 @@ issues/
 !/.scratch/zg-backend/issues/*.md
 !/.scratch/markdown-structure/issues/
 !/.scratch/markdown-structure/issues/*.md
+!/.scratch/flomo-on-demand/issues/
+!/.scratch/flomo-on-demand/issues/*.md
 
 # Machine-specific results and superseded investigation material stay local.
 /.scratch/zg-backend/probes/

@@ -21,6 +21,7 @@ export interface RankOptions {
   topK: number;
   maxPerFile: number;
   excludePath?: string;
+  candidatePaths?: ReadonlySet<string>;
   duplicateSimilarity?: number;
 }
 

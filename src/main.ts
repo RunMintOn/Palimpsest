@@ -29,6 +29,7 @@ import { queryBufferIsCurrent, queryRequestIsCurrent, queryResponseDisposition, 
 import { currentQuerySelection, isValidQueryText, paragraphQuerySource, sameQueryParagraph, QueryScopePresentation, QuerySource, QuerySourceCoordinator } from "./query-source";
 import { HybridRetrieval, KeywordIndexUnavailable } from "./hybrid-retrieval";
 import type { ResultExcerptPresentation } from "./result-presentation";
+import { createRetrievalApi, queryFailure, type TextQuerySnapshot, type TextQueryFailure } from "./text-query-api";
 import { migrateSettings, SideGrepSettings, SideGrepSettingTab, StoredSideGrepSettings } from "./settings";
 import { SidebarActions, PALIMPSEST_VIEW_TYPE, SideGrepView } from "./sidebar-view";
 import { CHUNKER_VERSION, IndexIdentity, IndexedChunk, IndexProgress, PersistentIndexData, SearchResult, SidebarState, SkippedIndexedDocument } from "./types";
@@ -78,6 +79,32 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
   /** A user-requested scope patch keeps ordinary vault events queued until it finishes. */
   private applyingIndexScope = false;
   private reconciliationPending = true;
+  readonly retrievalApi = createRetrievalApi({
+    snapshot: () => this.textQuerySnapshot(),
+    knownPendingUpdates: () => this.pendingVaultChanges.size > 0 || this.reconciliationPending || this.isAnyIndexUpdateActive() ||
+      this.deferredLargeIndexUpdate.isDeferred || this.fallbackGenerationInUse || this.getIndexScopeView().status === "pending"
+  });
+
+  private textQuerySnapshot(): TextQuerySnapshot | TextQueryFailure {
+    if (!this.buildCancellation.isPluginActive || !this.index || this.isAnyIndexUpdateActive()) {
+      return queryFailure("temporarily-unavailable", "Palimpsest 正在加载、更新或关闭，请稍后重新查询。");
+    }
+    const identity = this.indexIdentity();
+    const lifecycle = this.index.lifecycle(identity);
+    if (lifecycle === "uninitialized") return queryFailure("index-needed", "请打开 Palimpsest，先建立索引。");
+    if (lifecycle === "incompatible") return queryFailure("index-incompatible", "已有索引与当前配置不兼容，请打开 Palimpsest 重建索引。");
+    if (!this.retrieval) return queryFailure("backend-unavailable", "关键词后端不可用，请检查 Palimpsest 的本机安装。");
+    const chunks = this.index.chunks;
+    const provider = this.provider();
+    const modelInput = JSON.stringify([this.settings.endpoint, this.settings.model, this.settings.dimensions, this.settings.queryInstruction]);
+    return {
+      chunks,
+      retrieval: this.retrieval,
+      embedQuery: async text => (await provider.embedQuery(text)).vectors[0],
+      isCurrent: () => this.buildCancellation.isPluginActive && !this.isAnyIndexUpdateActive() && chunks === this.index.chunks &&
+        sameIdentity(identity, this.indexIdentity()) && modelInput === JSON.stringify([this.settings.endpoint, this.settings.model, this.settings.dimensions, this.settings.queryInstruction])
+    };
+  }
 
   async onload(): Promise<void> {
     let saved: unknown;
@@ -568,7 +595,7 @@ export default class SideGrepPlugin extends Plugin implements SidebarActions {
         topK: this.settings.topK,
         maxPerFile: this.settings.maxPerFile,
         excludePath: filePath
-      }, requestCurrent);
+      }, requestCurrent, () => this.buildCancellation.isPluginActive && chunks === this.index.chunks && !this.isAnyIndexUpdateActive());
       if (!requestCurrent()) return;
       const latencyMs = performance.now() - started;
       const message = this.index.size

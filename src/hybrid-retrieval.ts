@@ -83,7 +83,7 @@ export class HybridRetrieval {
         this.snapshot = chunks;
       } catch (error) {
         this.release();
-        throw error;
+        throw new KeywordIndexUnavailable(`关键词同步失败：${error instanceof Error ? error.message : String(error)}`);
       }
     });
     this.pending = work;
@@ -98,14 +98,14 @@ export class HybridRetrieval {
         .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).map(doc => doc.id);
     } catch (error) {
       this.release();
-      throw error;
+      throw new KeywordIndexUnavailable(`关键词检索失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  async search(text: string, vector: NumericVector, chunks: readonly IndexedChunk[], options: RankOptions, isCurrent: () => boolean): Promise<SearchResult[]> {
-    await this.synchronize(chunks, isCurrent);
+  async search(text: string, vector: NumericVector, chunks: readonly IndexedChunk[], options: RankOptions, isCurrent: () => boolean, snapshotCurrent = isCurrent): Promise<SearchResult[]> {
+    await this.synchronize(chunks, snapshotCurrent);
     if (this.closed || !isCurrent() || this.snapshot !== chunks) throw new KeywordIndexUnavailable("查询快照已失效，请重新查询");
-    const eligible = chunks.filter(chunk => chunk.filePath !== options.excludePath);
+    const eligible = chunks.filter(chunk => chunk.filePath !== options.excludePath && (!options.candidatePaths || options.candidatePaths.has(chunk.filePath)));
     const eligibleIds = new Set(eligible.map(chunk => chunk.id));
     const vectors = vectorRanking(vector, eligible).map(chunk => chunk.id);
     let depth = Math.min(chunks.length, Math.max(200, options.topK * 5));
