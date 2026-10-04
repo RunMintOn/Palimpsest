@@ -8,6 +8,8 @@
 Palimpsest is an Obsidian plugin that quietly watches from the right side of
 your workspace and brings older notes back into view while you write.
 
+![](image2.png)
+
 ---
 
 ## How is it different from ordinary search?
